@@ -2,6 +2,7 @@
 declare(strict_types=1);
 require_once __DIR__ . '/includes/auth.php';
 require_once __DIR__ . '/includes/csrf.php';
+require_once __DIR__ . '/includes/leak_status.php';
 $operator = sv_require_login();
 $db = sv_db();
 
@@ -103,11 +104,9 @@ require __DIR__ . '/includes/layout_top.php';
 ?>
 <h1>Incidents</h1>
 
-<div class="sv-panel">
-  <strong>Leak Checker is not implemented yet.</strong> You can record and triage incidents manually here.
-  Confirming an incident does <strong>not</strong> revoke a token, rotate source credentials, or change the stream.
-  An empty list does not mean that no leak exists.
-</div>
+<?php sv_render_leak_status($db); ?>
+<div class="sv-panel">You can record and triage incidents manually here. Confirming an incident does
+  <strong>not</strong> revoke a token, rotate source credentials, or change the stream.</div>
 
 <div class="sv-panel">
   <h2 style="margin-top:0;">Record an incident</h2>

@@ -1,6 +1,7 @@
 <?php
 declare(strict_types=1);
 require_once __DIR__ . '/includes/auth.php';
+require_once __DIR__ . '/includes/leak_status.php';
 $operator = sv_require_login();
 $db = sv_db();
 
@@ -43,9 +44,6 @@ require __DIR__ . '/includes/layout_top.php';
   <?php endif; ?>
 </div>
 
-<div class="sv-panel">
-  <strong>Leak Checker:</strong> not yet implemented (see ROADMAP.md Phase 6) — no automated GitHub/GitLab
-  scanning is running. Do not treat the absence of incidents above as confirmation that no leak exists.
-</div>
+<?php sv_render_leak_status($db); ?>
 
 <?php require __DIR__ . '/includes/layout_bottom.php'; ?>

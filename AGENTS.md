@@ -44,7 +44,8 @@ importantly, from breaking things that already work.
 - **Run the tests before claiming something works**:
   `gateway && go test ./...`, then `tests/e2e_gateway.sh`,
   `tests/e2e_admin_flow.sh`, `tests/crypto_interop.sh`, and
-  `tests/e2e_incidents.sh` for incident UI changes. If you change the routing
+  `tests/e2e_incidents.sh` for incident UI changes, and
+  `tests/e2e_leak_admin.sh` for GitHub configuration and coverage UI. If you change the routing
   convention, the manifest rewriter, or the crypto wire format, these are
   exactly the tests that will tell you if you broke something real
   (they're written against actual ffmpeg-generated HLS and a real HTTP
@@ -83,6 +84,7 @@ importantly, from breaking things that already work.
     cli/create_operator.php       -- CLI-only bootstrap, deliberately not an HTTP endpoint
   tests/                          -- bash-driven integration tests, see README.md "Tests"
     e2e_incidents.sh               -- manual incident creation/triage through the real PHP admin
+    e2e_leak_admin.sh              -- GitHub token/source settings and scan request, no external API calls
   discord-bot/                    -- empty, Phase 9, not started
 ```
 

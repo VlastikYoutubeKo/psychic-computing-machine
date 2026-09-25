@@ -11,8 +11,8 @@ exercises it -- not just "the code compiles."
 | 2. Core Backend | **Done (MVP)** | SQLite schema (`migrations/0001_init.sql`), stream CRUD, access points, per-recipient tokens, audit log. Tested: `gateway/internal/store/store_test.go`, `tests/e2e_admin_flow.sh`. |
 | 3. Stream Gateway | **Done (MVP)** | Go gateway: routing, HLS manifest rewriting (master + media playlists, keys, init segments, absolute + relative URIs), segment-level token re-validation, SSRF host allowlist, streamed (non-buffered) segment proxying. Tested: `gateway/internal/hls/rewrite_test.go`, `tests/e2e_gateway.sh`. **Not done**: MPEG-TS-native output path (see Phase 4), backup/failover sources, bandwidth limiting. |
 | 4. Tvheadend & Restreamer | **Partial** | Generic HTTP(S) source + Basic Auth works. The gateway now detects MPEG-TS from sync bytes on the entry response and starts a shared, bounded FFmpeg copy-only remux session that exposes HLS through the same token-validated route. A real FFmpeg/HTTP/SQLite integration test covers playlist, segment and revocation. **Not done**: Tvheadend channel-list API import, profile selection, transcoding, native MPEG-TS output. |
-| 5. Administration UI | **Partial** | Stream list/create/edit/delete, access point add/revoke, token issue/revoke, dashboard counts, manual incident creation and triage, audit log written (not yet surfaced in the UI). **Not done**: search/filter/sort on the stream list, in-admin playback test, themable replacement-page editor (colors/logo). |
-| 6. Leak Checker | **Not started** | Schema exists (`incidents`, `leak_findings`) so this doesn't need a migration later. No GitHub/GitLab API calls, no normalization/dedup logic, nothing scheduled. The dashboard and incidents page both say this explicitly rather than showing an empty table that could be misread as "clean." |
+| 5. Administration UI | **Partial** | Stream CRUD, access points and tokens, manual incident triage, GitHub token/source settings, and scan coverage display. Audit log is written but not yet surfaced in the UI. **Not done**: stream search/filter/sort, in-admin playback test, themable replacement-page editor. |
+| 6. Leak Checker | **In progress** | Additive migrations `0002_leak_checker.sql` and `0003_leak_checker_lock.sql`; PHP admin saves an encrypted GitHub token, manages watched GitHub repos/orgs, marks a public path as secret, queues scan requests, and displays run status. The Go one-shot checker searches globally and runs extra queries for enabled sources, with a SQLite lock and local API tests. `tests/e2e_leak_admin.sh` covers the admin flow without GitHub API calls. No timer or live GitHub scan has been deployed or verified; GitLab and public playlist scanning remain unimplemented. |
 | 7. Incident Management | **Partial** | Admin can record an incident against an existing stream and move `new/probable -> confirmed/dismissed` or `confirmed -> resolved`. Every transition writes an action history and audit row; auth, CSRF, validation, and escaping are covered by `tests/e2e_incidents.sh`. No automated detection or token/source rotation is triggered. |
 | 8. Replacement Streams | **Partial** | A static HTML "stream unavailable" page (with the configured reason) is served on revoked/disabled access, over HTTP 410. **Not done**: replacement HLS video generation, themable colors/logo, bilingual (CZ/EN) message templates -- currently English only. |
 | 9. Discord Bot | **Not started** | `discord-bot/` directory scaffolded, empty. |
@@ -28,9 +28,9 @@ exercises it -- not just "the code compiles."
 2. Link manual incidents to specific access tokens where identifiable, then
    add an explicit operator-approved response action. Current triage changes
    the incident status only; it never revokes or rotates access automatically.
-3. GitHub search API polling for `iptv-org/iptv` and user-added
-   repos/orgs (Phase 6), starting read-only (findings only, no auto
-   anything) before wiring rotation to it.
+3. Finish reviewing the GitHub one-shot checker, then deploy a timer that
+   checks queued manual requests without running a full GitHub scan every
+   minute. Keep detection read-only before connecting rotation actions.
 4. ~~Docker Compose packaging~~ -- done for this host (see DEPLOYMENT.md);
    a fully standalone compose file for a from-scratch host is still open
    if this ever needs to run somewhere else.

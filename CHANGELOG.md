@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-09-25 -- Phase 6 PHP configuration and coverage UI
+
+- Added GitHub PAT entry in Settings, encrypted with the existing shared
+  `secret_box` key and never rendered back into HTML. Added add, enable,
+  disable and delete actions for watched GitHub repositories and
+  organizations in the new `leak_sources` table.
+- Added a `path_is_secret` control for public access points, so the checker
+  can treat disclosure of a random public path as a confirmed leak.
+- Dashboard, Incidents and Settings now show real `leak_checker_runs` data,
+  including last successful run, error or partial coverage, query counts,
+  and queued manual requests. The Settings “Scan now” action only writes a
+  request timestamp; a separate once-per-minute timer and one-shot checker
+  must process it. No web shell or Docker socket access was added.
+- Added `tests/e2e_leak_admin.sh`, exercising token encryption and secrecy,
+  source management, scan request, secret-path flag and status display over
+  real HTTP/PHP/SQLite without contacting GitHub. No production timer or
+  real GitHub scan was deployed in this step.
+
 ## 2026-09-25 -- Manual incident triage
 
 - Added authenticated, CSRF-protected incident creation in the PHP admin,

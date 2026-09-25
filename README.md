@@ -26,17 +26,22 @@ say so explicitly, in the UI itself.
   limited to two on this host; a live Tvheadend feed still needs a real
   deployment test before that integration can be called complete.
 - **Admin UI** (`admin/`, PHP 8.2): real login, stream CRUD, access point
-  management (public/private), per-recipient token issue/revoke, audit log.
+  management (public/private), per-recipient token issue/revoke, GitHub
+  monitoring settings and actual scan-run status, audit log.
   Server-rendered, no JS framework.
-- **Shared SQLite schema** (`migrations/0001_init.sql`), including
-  incidents and a schema-only table for future automated leak findings.
+- **Shared SQLite schema** (`migrations/`), including incidents, monitored
+  sources, scan runs and deduplicated findings.
 - **Manual incident triage** (`admin/incidents.php`): record evidence for a
   stream, then confirm, dismiss, or resolve the incident with an audit trail.
   These actions do not revoke tokens or rotate source credentials.
+- **GitHub Leak Checker code** (`gateway/cmd/leakchecker/`): a one-shot scan
+  over active access points, with extra queries for enabled repositories and
+  organizations. Local tests use a mock API. A production timer and live
+  GitHub scan have not been verified.
 
 ## What's explicitly NOT implemented yet
 
-Leak Checker (GitHub/GitLab/IPTV playlist scanning), automatic rotation,
+Deployed/verified GitHub Leak Checker scans, GitLab/IPTV playlist scanning, automatic rotation,
 Discord bot, replacement HLS video generation (only a static HTML page
 today), M3U export, EPG, Tvheadend channel import, bandwidth stats. See
 ROADMAP.md.
@@ -72,9 +77,11 @@ tests/e2e_gateway.sh                     # gateway alone against a real ffmpeg-g
 tests/e2e_admin_flow.sh                  # admin UI (real HTTP forms) + gateway, same DB, full lifecycle
 tests/crypto_interop.sh                  # PHP <-> Go source-credential encryption format cross-check
 tests/e2e_incidents.sh                   # manual incident creation, CSRF, triage and audit over HTTP
+tests/e2e_leak_admin.sh                  # GitHub token/source settings, scan queue and run status (no GitHub API)
 ```
 
-All five pass as of this writing on Debian 13 (trixie) with Go 1.24 and
+The PHP admin and Go checker tests pass locally; see ROADMAP.md for deployment
+status. Tests run on Debian 13 with Go 1.24 and
 PHP 8.4 CLI / 8.2-fpm.
 
 ## Documents

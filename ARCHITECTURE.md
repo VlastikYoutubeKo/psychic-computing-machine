@@ -225,6 +225,135 @@ every process start and never leaves it. A restart invalidates already
 issued resource links; clients must refresh their manifest, and some players
 may briefly stall until they do.
 
+## Leak Checker
+
+`gateway/internal/leakcheck` (Go) + `admin/settings.php` (PHP) implement
+Phase 6 for GitHub only (GitLab and public-playlist scanning are not
+implemented -- see ROADMAP.md).
+
+**The matching algorithm exists because of a constraint the rest of this
+project already committed to**: `access_tokens` stores only
+`sha256(token)`, never the raw value (see "Secrets" above). The leak
+checker therefore cannot search external sources for "our secret URL"
+directly -- there is no secret on file to search for. Instead:
+
+1. It searches GitHub (code search + issue/PR search) for an exact-phrase
+   anchor: `base_url + "/" + access_point.public_path`. This is safe to
+   send in a search query because `public_path` is not itself a secret
+   for an ordinary stream (only the token that follows it is) -- except
+   for the "long random path IS the secret" pattern from spec section 1,
+   which `access_points.path_is_secret` flags explicitly (see below).
+2. If a result contains the anchor followed by a 48-hex-character string
+   (matching `sv_generate_raw_token`'s length), that candidate is hashed
+   and compared against the access point's stored token hashes --
+   *never* the other way around. A match against an active token is
+   `Confirmed`; against a revoked/expired one, still `Confirmed` as
+   evidence but not urgent (it already doesn't work); no match at all is
+   `Probable` (the pattern looks right but we don't recognize it -- could
+   be stale, garbled, or unrelated).
+3. A bare anchor with no trailing token, on a normal public access point,
+   is just a `Mention` -- expected, not actionable. On a
+   `path_is_secret` public access point, any appearance of the exact path
+   is `Confirmed` outright, since there the path itself is what must stay
+   unguessable.
+4. **The raw candidate token is never persisted.** `leak_findings.matched_value`
+   stores the anchor plus a 12-character hash prefix
+   (`.../live/nova/<redacted token, hash 3f9a1c...>`), not the token
+   itself -- storing a working bearer credential in the findings table
+   would silently reintroduce exactly what hashing `access_tokens` was
+   meant to prevent. Caught in review before this ever ran a real scan.
+5. **The same discipline applies to error paths, not just successful
+   matches -- and took two review passes to get right.** The first fix
+   only removed the search query from `log.Printf`'s direct arguments in
+   `scanner.go`. That missed two places the query (which can be a
+   `path_is_secret` anchor) was still reachable through an error's own
+   `Error()` text, which scanner.go logs via a bare `%v`: a non-2xx
+   GitHub response's error included the raw request path (`?q=...`), and
+   a transport-level failure surfaces as a `*url.Error`, whose `Error()`
+   method concatenates the *full request URL* regardless of what
+   generated it. `gateway/internal/leakcheck/github.go`'s `do()` now
+   builds every returned error from only an endpoint name
+   (`endpointOnly`, everything before `?`) and a status code or coarse
+   failure kind -- never the query, the full URL, or the response body
+   (GitHub's search API validation errors can echo back part of an
+   invalid query, so "the body is just a fixed error shape" wasn't a safe
+   assumption to build a secrecy guarantee on either).
+   `TestErrorsNeverContainTheQuery` exercises both the HTTP-error and
+   network-failure paths directly against a planted secret string.
+
+**Automated findings never auto-confirm an incident.** A `Confirmed`
+match opens (or attaches to) an incident at status `probable`; a
+`Probable` match opens one at `new`. Either way, moving it to `confirmed`
+or `dismissed` stays a deliberate human action through the existing
+Phase 7 UI (`admin/incidents.php`) -- the checker's own confidence in the
+evidence is not the same thing as the operator having acted on it.
+Findings are grouped into one incident per `(stream, token)` pair (or per
+`(stream, access_point)` when no specific token was identified), per spec
+section 13's "don't let one leak spam duplicate incidents", and
+`leak_findings.dedupe_key` (a hash of source + source URL + matched
+value) means re-scanning unchanged content creates zero new rows, not
+just zero new incidents.
+
+**Why a one-shot binary on a timer, not a long-running daemon**:
+consistent with the rest of this project's stance on this
+memory-constrained host (see "Why a separate Go gateway" above), a
+process that only exists while it's actually doing work beats one sitting
+idle in memory between scans. `cmd/leakchecker` is designed to be invoked
+every minute by a timer (not deployed yet), but only
+performs a real scan when either a manual "Scan now" request is pending
+(`settings.leak_scan_requested_at`, written by `admin/settings.php`) or
+`minScanInterval` (20 minutes by default) has elapsed since the last run;
+otherwise it's a fast no-op DB check. This is what makes "Scan now" feel
+responsive without a full GitHub search sweep running every single
+minute and exhausting the search rate limit in a few minutes flat.
+
+Two concurrency issues in this design were caught by review, not written
+correctly the first time:
+
+- **A pending request landing mid-scan must not be lost.** A scan can
+  take several minutes; if a second "Scan now" click writes a new
+  `leak_scan_requested_at` while one is already running, the finishing
+  run must not blindly clear that newer value. `Store.ClearScanRequestIfUnchanged`
+  captures the exact value seen at start and only deletes it if it's
+  still the same value afterward (compare-and-delete).
+- **Two scans must not run at once.** With a 1-minute timer and up to a
+  10-minute scan, a manual request arriving mid-scan would otherwise
+  start a second, overlapping run. `leak_checker_lock`
+  (`migrations/0003_leak_checker_lock.sql` -- a separate migration from
+  0002 because 0002 was already applied to this host's live database and
+  to various tests by the time this was found, so editing its contents
+  wouldn't have reached anything that already recorded it as done) is a
+  single-row table acquired with a plain `INSERT` (fails on the second
+  attempt via the primary key) and released with a `DELETE`. A lock older
+  than 15 minutes is assumed to belong to a crashed process and is
+  stolen rather than blocking forever.
+
+**Explicitly watched sources** (`leak_sources`, managed from Settings):
+global GitHub code/issue search already covers all of public GitHub, so
+these exist for spec section 12's "Umožni přidat konkrétní repozitáře,
+organizace" -- e.g. giving `iptv-org/iptv` (which the spec calls out by
+name) a dedicated, always-run `repo:iptv-org/iptv`-scoped query in
+addition to the global one, so a specific priority source isn't at the
+mercy of global search's ranking or pagination limits. Each enabled
+source gets its own query per access point; disabled ones are skipped;
+`last_scanned_at` is updated after use.
+
+Each GitHub search currently reads only the first page (30 results).
+The run status does not measure matches beyond that page, so a clean run
+does not imply exhaustive GitHub coverage.
+
+**Verification status**: the entire matching/scanning/locking pipeline is
+covered by tests against an `httptest` mock GitHub server (25 test
+functions in `gateway/internal/leakcheck`, including two dedicated to
+proving a secret path never reaches an error or a log line) and the PHP
+admin side has its own HTTP end-to-end test (`tests/e2e_leak_admin.sh`)
+-- neither makes a real call to `api.github.com`. **No test has run
+against the real GitHub API with a real token as of this writing.** The
+project owner is providing a dedicated-account Personal Access Token for
+that; until it's in place and a real scan has been observed end to end,
+treat GitHub search integration as tested-in-isolation, not
+field-verified.
+
 ## What was deliberately deferred
 
 See ROADMAP.md for the full phase list. Notably: no Caddy config has been

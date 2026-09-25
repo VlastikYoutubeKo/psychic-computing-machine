@@ -38,14 +38,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($action === 'add_access_point') {
         $path = trim((string) ($_POST['public_path'] ?? ''), '/');
         $visibility = ($_POST['visibility'] ?? '') === 'private' ? 'private' : 'public';
+        $pathIsSecret = $visibility === 'public' && isset($_POST['path_is_secret']) ? 1 : 0;
         $err = sv_validate_public_path($path);
         if ($err) {
             sv_flash('err', $err);
         } else {
             try {
-                $db->prepare('INSERT INTO access_points (stream_id, public_path, visibility) VALUES (?, ?, ?)')
-                    ->execute([$id, $path, $visibility]);
-                sv_audit('access_point_created', "stream:$id", ['public_path' => $path, 'visibility' => $visibility]);
+                $db->prepare('INSERT INTO access_points (stream_id, public_path, visibility, path_is_secret) VALUES (?, ?, ?, ?)')
+                    ->execute([$id, $path, $visibility, $pathIsSecret]);
+                sv_audit('access_point_created', "stream:$id", ['public_path' => $path, 'visibility' => $visibility, 'path_is_secret' => $pathIsSecret]);
                 sv_flash('ok', "Access point \"$path\" created.");
             } catch (PDOException $e) {
                 sv_flash('err', str_contains($e->getMessage(), 'UNIQUE')
@@ -61,6 +62,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $db->prepare('UPDATE access_points SET status = "revoked" WHERE id = ? AND stream_id = ?')->execute([$apId, $id]);
         sv_audit('access_point_revoked', "access_point:$apId");
         sv_flash('ok', 'Access point revoked. Its URL now shows the revoked-stream page.');
+        sv_redirect("stream_view.php?id=$id");
+    }
+
+    if ($action === 'toggle_path_secret') {
+        $apId = (int) ($_POST['access_point_id'] ?? 0);
+        $stmt = $db->prepare('UPDATE access_points SET path_is_secret = 1 - path_is_secret WHERE id = ? AND stream_id = ? AND visibility = ?');
+        $stmt->execute([$apId, $id, 'public']);
+        if ($stmt->rowCount() === 1) {
+            sv_audit('access_point_path_secret_toggled', "access_point:$apId");
+            sv_flash('ok', 'Public path sensitivity updated.');
+        } else {
+            sv_flash('err', 'Public access point not found.');
+        }
         sv_redirect("stream_view.php?id=$id");
     }
 
@@ -172,6 +186,13 @@ require __DIR__ . '/includes/layout_top.php';
     </div>
 
     <?php if ($ap['visibility'] === 'public'): ?>
+      <p class="sv-help">Path itself is a secret: <strong><?= $ap['path_is_secret'] ? 'yes' : 'no' ?></strong>. Mark random public paths as secret so an external mention counts as a leak.</p>
+      <form method="post" style="margin-bottom:0.75rem;">
+        <?= sv_csrf_field() ?>
+        <input type="hidden" name="action" value="toggle_path_secret">
+        <input type="hidden" name="access_point_id" value="<?= (int) $ap['id'] ?>">
+        <button type="submit" class="btn-sm"><?= $ap['path_is_secret'] ? 'Mark path as public' : 'Mark path as secret' ?></button>
+      </form>
       <div class="sv-url-box">
         <span class="mono"><?= h(($baseUrl ?: '') . '/' . $fullPath . '.m3u8') ?></span>
         <button type="button" data-copy="<?= h(($baseUrl ?: '') . '/' . $fullPath . '.m3u8') ?>" class="btn-sm">Copy</button>
@@ -244,6 +265,7 @@ require __DIR__ . '/includes/layout_top.php';
       <option value="public">Public (no token required)</option>
       <option value="private">Private (requires a bearer token per recipient)</option>
     </select>
+    <label><input type="checkbox" name="path_is_secret" value="1"> Public path itself is a secret (for random unlisted URLs; applies only to public access points)</label>
     <button type="submit" class="btn-primary" style="margin-top:1rem;">Add</button>
   </form>
 </div>
