@@ -134,24 +134,41 @@ Four independent layers, not one:
    blob from this gateway) but for the wrong context. Caught in a second
    review pass, after the first fix; verified in
    `TestBlobCannotBeReplayedUnderAnotherAccessPoint`.
-3. **A per-stream host allowlist as defense in depth.** Even a
-   successfully decoded target must match the stream's own configured
-   `source_url` scheme+host (`gatewayhttp.sameOrigin`) before the gateway
-   will fetch it. This layer is what's actually exercised by
-   `tests/e2e_gateway.sh`'s forged-blob-style check, and remains useful in
-   case of a future bug in the encode/decode path.
-4. **Redirects are constrained too.** The outbound HTTP client's
-   `CheckRedirect` re-validates *every* hop against the same origin, not
-   just the initial request -- the default `http.Client` follows redirects
-   without re-checking, so a source that issues (or is tricked into
-   issuing) a redirect could otherwise walk the gateway off its
-   allowlisted host entirely. Also caught in security review. A related,
-   non-security correctness bug fixed alongside it: relative URIs in a
-   manifest fetched via a redirect must resolve against the *final*
-   post-redirect URL, not the originally requested one -- the handler now
-   uses `resp.Request.URL` (Go's `http.Response` exposes the actual last
-   request after following redirects) as the base for `hls.RewritePlaylist`,
-   not the pre-fetch target.
+3. **`checkFetchTarget` (`gateway/internal/gatewayhttp/ssrf.go`) as defense
+   in depth against the real risk, not against "a different host".** Even
+   a successfully decoded target is checked before the gateway will fetch
+   it -- and so is every redirect hop the entry fetch follows (same
+   function, same policy). The *first* version of this required the
+   target to be the exact same host as the stream's `source_url`. That
+   shipped, passed its own tests, and then broke on this project's first
+   real production stream: many legitimate sources (this one included)
+   302 their entry point to a *different* host per request -- a fresh CDN
+   edge node with a signed, single-use URL -- which a same-host rule
+   can't tell apart from an actual redirect-based attack. The real risk is
+   narrower than "a different host": a source (compromised, malicious, or
+   just misconfigured) redirecting the gateway into *this host's own
+   private network* -- cloud metadata, other containers, localhost. So
+   the rule is now: any *public* target is allowed regardless of host,
+   exactly as a browser would follow the same redirect; a *private/reserved*
+   target is allowed only when the stream's own configured source is
+   itself private (a LAN Tvheadend/Restreamer box per spec section 7, or
+   another container on this project's own Docker network -- both real,
+   intended cases, not exceptions). `Handler.Resolve` makes the
+   IP-classification step injectable, cached 5 minutes per stream so it
+   doesn't cost a DNS lookup on every segment request. See
+   `ssrf_test.go` and CHANGELOG.md for the fix and how it was verified
+   (including against the real stream that exposed the bug).
+4. **Every redirect hop is checked, not just the initial request.** The
+   outbound HTTP client's `CheckRedirect` runs `checkFetchTarget` on every
+   hop -- the default `http.Client` follows redirects with no re-check at
+   all, so a source that issues (or is tricked into issuing) a redirect
+   could otherwise walk the gateway anywhere. A related, non-security
+   correctness bug fixed alongside the first version of this: relative
+   URIs in a manifest fetched via a redirect must resolve against the
+   *final* post-redirect URL, not the originally requested one -- the
+   handler uses `resp.Request.URL` (Go's `http.Response` exposes the
+   actual last request after following redirects) as the base for
+   `hls.RewritePlaylist`, not the pre-fetch target.
 
 ## How this was actually verified
 

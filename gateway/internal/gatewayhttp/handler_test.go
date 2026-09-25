@@ -1,11 +1,13 @@
 package gatewayhttp
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -56,6 +58,13 @@ func newTestHandler(t *testing.T) (*Handler, *sql.DB) {
 		t.Fatalf("New: %v", err)
 	}
 	t.Cleanup(h.Remux.Close)
+	// Every httptest server in this file binds to 127.0.0.1, which real DNS
+	// resolution (h.Resolve's default) would correctly call private -- but
+	// that would make every test's "source" look like a trusted-private
+	// LAN box and silently disable the SSRF checks these tests exist to
+	// exercise. Default to "everything is public" here; tests that
+	// specifically need a private source or target override this.
+	h.Resolve = func(ctx context.Context, host string) (bool, error) { return false, nil }
 	return h, raw
 }
 
@@ -184,20 +193,24 @@ func TestPrivateAccessTokenLifecycleOverHTTP(t *testing.T) {
 	}
 }
 
-func TestCrossOriginBlobRejectedEvenWhenValidlyEncoded(t *testing.T) {
-	// This specifically tests the defense-in-depth host allowlist
-	// (ARCHITECTURE.md "SSRF boundary" layer 2): even a blob that *is*
-	// correctly encrypted by this gateway's own codec, but points at a
-	// host other than the stream's configured source, must be rejected.
-	// A black-box test can no longer forge this (the whole point of
-	// encrypting the blob), so this has to run at this level, using the
-	// handler's own Codec the way the gateway itself would.
+func TestCrossOriginBlobToPrivateAddressRejectedEvenWhenValidlyEncoded(t *testing.T) {
+	// This specifically tests the defense-in-depth SSRF check
+	// (ARCHITECTURE.md "SSRF boundary" / checkFetchTarget): even a blob
+	// that *is* correctly encrypted by this gateway's own codec, but
+	// resolves to a private/reserved address while the stream's own
+	// source is public, must be rejected. A black-box test can no longer
+	// forge this (the whole point of encrypting the blob), so this has to
+	// run at this level, using the handler's own Codec the way the
+	// gateway itself would.
 	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, "#EXTM3U\n#EXTINF:6.0,\nseg1.ts\n")
 	}))
 	defer source.Close()
 
 	h, db := newTestHandler(t)
+	h.Resolve = func(ctx context.Context, host string) (bool, error) {
+		return host == "169.254.169.254", nil // the classic cloud-metadata SSRF target
+	}
 	apID := seedStream(t, db, source.URL+"/index.m3u8", "live/nova", "public")
 
 	gw := httptest.NewServer(h)
@@ -213,7 +226,44 @@ func TestCrossOriginBlobRejectedEvenWhenValidlyEncoded(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("expected 403 for cross-origin (but validly encoded) blob, got %d", resp.StatusCode)
+		t.Fatalf("expected 403 for a blob resolving to a private address from a public source, got %d", resp.StatusCode)
+	}
+}
+
+func TestCrossOriginBlobToPublicHostIsAllowed(t *testing.T) {
+	// The policy this project shipped with first required the blob's
+	// target to be the *exact same host* as the stream's source_url. That
+	// broke real streams (see checkFetchTarget's doc comment): many
+	// legitimate sources redirect to a different, still-public, CDN host
+	// per request. A blob pointing at a different but public host must be
+	// allowed.
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "#EXTM3U\n#EXTINF:6.0,\nseg1.ts\n")
+	}))
+	defer source.Close()
+	otherPublicHost := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "segment-from-a-different-but-public-host")
+	}))
+	defer otherPublicHost.Close()
+
+	h, db := newTestHandler(t) // default resolver: everything is public
+	apID := seedStream(t, db, source.URL+"/index.m3u8", "live/nova", "public")
+
+	gw := httptest.NewServer(h)
+	defer gw.Close()
+
+	blob, err := h.Codec.Encode(otherPublicHost.URL+"/seg1.ts", fmt.Sprint(apID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.Get(gw.URL + "/live/nova/r/" + blob)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK || string(body) != "segment-from-a-different-but-public-host" {
+		t.Fatalf("expected a different-but-public host to be fetched, got status=%d body=%q", resp.StatusCode, body)
 	}
 }
 
@@ -289,18 +339,44 @@ func TestSameOriginRedirectResolvesSegmentsFromFinalPlaylistURL(t *testing.T) {
 	}
 }
 
-func TestRedirectToDifferentOriginIsNeverFetched(t *testing.T) {
+// newServerOn starts an httptest-style server on a specific loopback
+// address (httptest.NewServer always uses 127.0.0.1, which makes it
+// impossible to tell "the source" and "an evil redirect target" apart by
+// hostname alone -- both would be the literal string "127.0.0.1"). Using
+// a distinct address in 127.0.0.0/8 lets a test's mock Resolve tell them
+// apart the same way it would tell apart two genuinely different hosts.
+func newServerOn(t *testing.T, addr string, handler http.HandlerFunc) *httptest.Server {
+	t.Helper()
+	l, err := net.Listen("tcp", addr+":0")
+	if err != nil {
+		t.Skipf("cannot bind %s (sandboxed environment?): %v", addr, err)
+	}
+	srv := httptest.NewUnstartedServer(handler)
+	srv.Listener.Close()
+	srv.Listener = l
+	srv.Start()
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestRedirectToPrivateAddressIsNeverFetched(t *testing.T) {
+	// The actual risk checkFetchTarget defends against: a source
+	// redirecting the gateway into a private/internal address (cloud
+	// metadata, another container, localhost), not simply "a different
+	// host" -- see its doc comment for why those are different things.
 	var hits atomic.Int32
-	evil := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	evil := newServerOn(t, "127.0.0.2", func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
 		io.WriteString(w, "#EXTM3U\n")
-	}))
-	defer evil.Close()
+	})
 	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, evil.URL+"/internal", http.StatusFound)
 	}))
 	defer source.Close()
 	h, db := newTestHandler(t)
+	h.Resolve = func(ctx context.Context, host string) (bool, error) {
+		return host == "127.0.0.2", nil // the redirect target only; source (127.0.0.1) stays "public"
+	}
 	seedStream(t, db, source.URL+"/entry.m3u8", "redirect/blocked", "public")
 	gw := httptest.NewServer(h)
 	defer gw.Close()
@@ -310,7 +386,67 @@ func TestRedirectToDifferentOriginIsNeverFetched(t *testing.T) {
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusBadGateway || hits.Load() != 0 {
-		t.Fatalf("cross-origin redirect: status=%d target hits=%d", resp.StatusCode, hits.Load())
+		t.Fatalf("redirect to a private address: status=%d target hits=%d", resp.StatusCode, hits.Load())
+	}
+}
+
+func TestRedirectAllowedWhenSourceItselfIsPrivate(t *testing.T) {
+	// A LAN Tvheadend/Restreamer box (spec section 7) is itself on a
+	// private address, and its own redirects/segment references landing
+	// on that same private network are expected, not an attack -- see
+	// checkFetchTarget's doc comment. This is what actually lets a
+	// same-Docker-network or same-LAN source work at all under this
+	// policy, not just an edge case.
+	var hits atomic.Int32
+	lanEdge := newServerOn(t, "127.0.0.3", func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		io.WriteString(w, "#EXTM3U\n#EXTINF:2,\nseg.ts\n")
+	})
+	lanSource := newServerOn(t, "127.0.0.4", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, lanEdge.URL+"/index.m3u8", http.StatusFound)
+	})
+	h, db := newTestHandler(t)
+	h.Resolve = func(ctx context.Context, host string) (bool, error) {
+		return host == "127.0.0.3" || host == "127.0.0.4", nil // both "LAN" addresses
+	}
+	seedStream(t, db, lanSource.URL+"/entry.m3u8", "redirect/lan", "public")
+	gw := httptest.NewServer(h)
+	defer gw.Close()
+	resp, err := http.Get(gw.URL + "/redirect/lan.m3u8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || hits.Load() == 0 {
+		t.Fatalf("expected a private source's own redirect within its network to be allowed: status=%d hits=%d", resp.StatusCode, hits.Load())
+	}
+}
+
+func TestRedirectToDifferentPublicHostIsFetched(t *testing.T) {
+	// Regression test for the bug this project's first live end-to-end
+	// test actually hit: a source 302ing its entry point to a different
+	// (but public) CDN host must work, not be rejected as "cross-origin".
+	var hits atomic.Int32
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		io.WriteString(w, "#EXTM3U\n#EXTINF:2,\nseg.ts\n")
+	}))
+	defer cdn.Close()
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, cdn.URL+"/edge/index.m3u8", http.StatusFound)
+	}))
+	defer source.Close()
+	h, db := newTestHandler(t) // default resolver: everything is public
+	seedStream(t, db, source.URL+"/entry.m3u8", "redirect/cdn", "public")
+	gw := httptest.NewServer(h)
+	defer gw.Close()
+	resp, err := http.Get(gw.URL + "/redirect/cdn.m3u8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || hits.Load() == 0 {
+		t.Fatalf("expected the different-but-public CDN host to be followed: status=%d hits=%d", resp.StatusCode, hits.Load())
 	}
 }
 

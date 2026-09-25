@@ -1,5 +1,48 @@
 # Changelog
 
+## 2026-09-25 (even later) -- Fixed SSRF redirect policy against a real stream
+
+The project owner set up a real production stream (`rest.iptvlookup.com`,
+routed through a new Caddy site block to `streamvault-gateway`) and hit
+`525`/`502` errors: first because the Caddy site block didn't exist yet
+(added, then a `caddy reload` didn't pick it up -- confirmed the known
+project quirk that Caddyfile changes need the container recreated, not
+just reloaded), then because the gateway's own SSRF redirect check
+rejected the stream's source. The source
+(`http://cynessa.ottb.xyz/live/.../13566.ts`) 302-redirects its entry
+point to a fresh, single-use CDN77 edge URL *on a different host* on
+every request -- an entirely ordinary CDN pattern, and exactly what the
+gateway's same-host-only redirect policy was written to reject.
+
+That policy was too strict for real-world sources by design, not by
+accident of a missed edge case: rewrote it in
+`gateway/internal/gatewayhttp/ssrf.go` (new file) around the actual risk
+(a source redirecting the gateway into *this host's own private
+network* -- cloud metadata, other containers, localhost) rather than "any
+different host at all". A redirect/resource-fetch target is now allowed
+if it resolves to a public address, regardless of host, matching what a
+browser would do; a private/reserved target is allowed only when the
+stream's own configured source is itself private (a LAN Tvheadend box,
+or another container on this project's own Docker network -- both real,
+intended use cases, not exceptions). `Handler.Resolve` makes the
+IP-classification step injectable so tests don't depend on real DNS or
+on httptest's own loopback binding (every httptest server uses
+`127.0.0.1`, which real resolution correctly calls private -- without
+injection, every test's "source" would look like a trusted LAN box and
+silently disable the checks meant to exercise the opposite case). Cached
+per-stream for 5 minutes so this doesn't cost a DNS lookup on every
+segment request. New tests in `ssrf_test.go` and additions to
+`handler_test.go` cover: private target rejected under a public source,
+private target allowed under a private source, and a different-but-public
+redirect host now succeeding (the actual regression for this bug).
+
+After the fix and a rebuild/redeploy of `streamvault-gateway`, the
+redirect chain resolved correctly against the real source (confirmed via
+`docker exec ... wget` following the exact same 302 chain manually); the
+stream then hit the *source's own* rate limit (429) from the repeated
+testing during this session, which is a real, external, and unrelated
+constraint, not a StreamVault bug.
+
 ## 2026-09-25 (later) -- First real end-to-end verification against live GitHub
 
 The project owner configured a real GitHub PAT (dedicated account) and

@@ -255,7 +255,39 @@ already present; this section is retained as a deployment reference):
    test stream, confirm the dashboard renders. Do **not** consider this
    step done just because the container started -- check the actual page.
 
-## Production cutover (not yet applied -- requires your approval)
+## Stream-facing domain: rest.iptvlookup.com (live)
+
+The project owner set up the first real stream-facing domain,
+`rest.iptvlookup.com`, routing to `streamvault-gateway` -- separate from
+`help.iptvlookup.com` (admin-only) per the original split. Caddy block
+added:
+
+```caddyfile
+rest.iptvlookup.com {
+	import blocked_ips
+	reverse_proxy streamvault-gateway:8090 {
+		flush_interval -1
+	}
+}
+```
+
+Getting this live surfaced two real issues, both fixed:
+
+1. A `caddy reload` did not pick up the new site block (confirmed the
+   known project quirk -- Caddyfile changes need `docker compose up -d
+   --force-recreate caddy`, not just a reload). The running config was
+   checked directly via the Admin API (`/config/apps/http/servers/`) to
+   confirm before and after.
+2. The gateway's SSRF redirect policy rejected the actual stream's source,
+   which 302s to a different CDN host per request -- see CHANGELOG.md
+   "Fixed SSRF redirect policy against a real stream" and
+   ARCHITECTURE.md "SSRF boundary" for the real fix (not a workaround).
+
+This is the template for adding further stream-facing domains later: one
+additive Caddy block per domain, `reverse_proxy streamvault-gateway:8090`,
+no gateway code changes needed per domain.
+
+## Production cutover for restream.mxnticek.eu (not yet applied -- requires your approval)
 
 To actually protect `restream.mxnticek.eu` for real (see SECURITY.md
 "Existing exposure found during research"), the production Caddyfile

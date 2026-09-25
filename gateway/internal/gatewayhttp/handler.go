@@ -39,9 +39,29 @@ type Handler struct {
 	Transport *http.Transport
 	Remux     *remux.Manager
 
+	// Resolve backs checkFetchTarget's private/public IP classification.
+	// Defaults to real DNS (hostResolvesToPrivate); tests override it,
+	// since every httptest server binds to 127.0.0.1 -- itself a private
+	// address -- which would otherwise make every test's "source" look
+	// private and silently disable the check being tested.
+	Resolve resolveFunc
+
 	touchMu   sync.Mutex
 	lastTouch map[int64]time.Time
+
+	// sourceTrustCache avoids a DNS lookup on every single segment request
+	// (checkFetchTarget's decision only changes when a stream's source_url
+	// itself is edited, which is rare) -- see isSourcePrivate.
+	sourceTrustMu    sync.Mutex
+	sourceTrustCache map[int64]sourceTrustEntry
 }
+
+type sourceTrustEntry struct {
+	private   bool
+	checkedAt time.Time
+}
+
+const sourceTrustCacheTTL = 5 * time.Minute
 
 func New(st *store.Store, key []byte) (*Handler, error) {
 	codec, err := blobcodec.New()
@@ -58,9 +78,34 @@ func New(st *store.Store, key []byte) (*Handler, error) {
 			ResponseHeaderTimeout: 10 * time.Second,
 			IdleConnTimeout:       60 * time.Second,
 		},
-		Remux:     remux.NewManager(),
-		lastTouch: make(map[int64]time.Time),
+		Remux:            remux.NewManager(),
+		Resolve:          hostResolvesToPrivate,
+		lastTouch:        make(map[int64]time.Time),
+		sourceTrustCache: make(map[int64]sourceTrustEntry),
 	}, nil
+}
+
+// isSourcePrivate reports whether stream s's own configured source_url is
+// itself on a private/reserved address, cached briefly per stream so this
+// doesn't cost a DNS lookup on every segment request -- see
+// checkFetchTarget's doc comment for what this decision gates.
+func (h *Handler) isSourcePrivate(ctx context.Context, s store.Stream, sourceEntry *url.URL) bool {
+	h.sourceTrustMu.Lock()
+	if e, ok := h.sourceTrustCache[s.ID]; ok && time.Since(e.checkedAt) < sourceTrustCacheTTL {
+		h.sourceTrustMu.Unlock()
+		return e.private
+	}
+	h.sourceTrustMu.Unlock()
+
+	private, err := h.Resolve(ctx, sourceEntry.Hostname())
+	if err != nil {
+		private = false // unresolvable source: fail to the stricter (public-only) policy, never the more permissive one
+	}
+
+	h.sourceTrustMu.Lock()
+	h.sourceTrustCache[s.ID] = sourceTrustEntry{private: private, checkedAt: time.Now()}
+	h.sourceTrustMu.Unlock()
+	return private
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -122,7 +167,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if remainder == "" {
-		h.serveEntry(w, ap, sourceEntry, prefix)
+		h.serveEntry(w, r, ap, sourceEntry, prefix)
 		return
 	}
 
@@ -145,20 +190,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if !sameOrigin(target, sourceEntry) {
-		if target.Scheme == "sv-remux" {
-			h.serveRemuxResource(w, r, ap, target)
-			return
-		}
-		// Defense in depth: the blob is authenticated now (blobcodec), so
-		// this should be unreachable via a forged link, but a per-stream
-		// host allowlist costs nothing and guards against any future bug
-		// in the encode/decode path.
-		log.Printf("blocked cross-origin fetch for stream %d: %s", ap.Stream.ID, target.Host)
+	if target.Scheme == "sv-remux" {
+		h.serveRemuxResource(w, r, ap, target)
+		return
+	}
+	// The blob is authenticated (blobcodec) and bound to this access point,
+	// so this is about SSRF, not about the blob being forged -- see
+	// checkFetchTarget's doc comment for the actual policy and why a
+	// simple "must match the source's own host" rule broke real streams.
+	if err := checkFetchTarget(r.Context(), h.Resolve, target, h.isSourcePrivate(r.Context(), ap.Stream, sourceEntry)); err != nil {
+		log.Printf("blocked resource fetch for stream %d: %v", ap.Stream.ID, err)
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	h.serveResource(w, r, ap, target, prefix)
+	h.serveResource(w, r, ap, sourceEntry, target, prefix)
 }
 
 // resolvePrefix implements the routing convention described in
@@ -215,12 +260,13 @@ func sourceSignature(s store.Stream) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func (h *Handler) serveEntry(w http.ResponseWriter, ap *store.AccessPoint, sourceEntry *url.URL, prefix string) {
+func (h *Handler) serveEntry(w http.ResponseWriter, r *http.Request, ap *store.AccessPoint, sourceEntry *url.URL, prefix string) {
 	if s := h.Remux.Existing(ap.Stream.ID, sourceSignature(ap.Stream)); s != nil {
 		h.writeRemuxPlaylist(w, ap, s, prefix)
 		return
 	}
-	resp, err := h.fetch(context.Background(), sourceEntry, ap.Stream, 20*time.Second)
+	sourcePrivate := h.isSourcePrivate(r.Context(), ap.Stream, sourceEntry)
+	resp, err := h.fetch(r.Context(), sourceEntry, ap.Stream, sourcePrivate, 20*time.Second)
 	if err != nil {
 		log.Printf("fetching source for stream %d failed", ap.Stream.ID)
 		http.Error(w, "upstream unavailable", http.StatusBadGateway)
@@ -234,8 +280,9 @@ func (h *Handler) serveEntry(w http.ResponseWriter, ap *store.AccessPoint, sourc
 	h.sniffAndServe(w, resp, resp.Request.URL, prefix, ap, true)
 }
 
-func (h *Handler) serveResource(w http.ResponseWriter, r *http.Request, ap *store.AccessPoint, target *url.URL, prefix string) {
-	resp, err := h.fetch(r.Context(), target, ap.Stream, 20*time.Second)
+func (h *Handler) serveResource(w http.ResponseWriter, r *http.Request, ap *store.AccessPoint, sourceEntry, target *url.URL, prefix string) {
+	sourcePrivate := h.isSourcePrivate(r.Context(), ap.Stream, sourceEntry)
+	resp, err := h.fetch(r.Context(), target, ap.Stream, sourcePrivate, 20*time.Second)
 	if err != nil {
 		log.Printf("fetching resource for stream %d failed", ap.Stream.ID)
 		http.Error(w, "upstream unavailable", http.StatusBadGateway)
@@ -249,15 +296,17 @@ func (h *Handler) serveResource(w http.ResponseWriter, r *http.Request, ap *stor
 	h.sniffAndServe(w, resp, resp.Request.URL, prefix, ap, false)
 }
 
-// fetch builds a per-call client so CheckRedirect can be pinned to this
-// specific stream's source origin. A shared *http.Transport underneath
-// still gives connection reuse; only the thin http.Client wrapper (and its
-// redirect policy) is per-request. Without this, the default client
-// follows redirects without re-checking the origin, so a source that
-// starts (or is tricked into) redirecting could walk the gateway off its
-// allowlisted host entirely -- caught in security review before this ever
-// reached production. See SECURITY.md.
-func (h *Handler) fetch(ctx context.Context, target *url.URL, s store.Stream, timeout time.Duration) (*http.Response, error) {
+// fetch builds a per-call client so CheckRedirect can enforce
+// checkFetchTarget on every hop, not just the initial request. A shared
+// *http.Transport underneath still gives connection reuse; only the thin
+// http.Client wrapper (and its redirect policy) is per-request. Without
+// this, the default client follows redirects with no re-check at all, so
+// a source that starts (or is tricked into) redirecting could walk the
+// gateway anywhere -- caught in security review before this ever reached
+// production, then found to be *too* strict against a real source in this
+// project's first live end-to-end test (see checkFetchTarget). See
+// SECURITY.md.
+func (h *Handler) fetch(ctx context.Context, target *url.URL, s store.Stream, sourcePrivate bool, timeout time.Duration) (*http.Response, error) {
 	client := &http.Client{
 		Timeout:   timeout,
 		Transport: h.Transport,
@@ -265,8 +314,8 @@ func (h *Handler) fetch(ctx context.Context, target *url.URL, s store.Stream, ti
 			if len(via) >= 5 {
 				return errors.New("stopped after 5 redirects")
 			}
-			if req.URL.Scheme != target.Scheme || req.URL.Host != target.Host {
-				return fmt.Errorf("refusing to follow redirect to disallowed host %s", req.URL.Host)
+			if err := checkFetchTarget(req.Context(), h.Resolve, req.URL, sourcePrivate); err != nil {
+				return fmt.Errorf("refusing to follow redirect: %w", err)
 			}
 			return nil
 		},
@@ -346,8 +395,9 @@ func (h *Handler) sniffAndServe(w http.ResponseWriter, resp *http.Response, mani
 // opens its own request so its lifetime is independent of this HTTP response.
 func (h *Handler) serveRemuxEntry(w http.ResponseWriter, ap *store.AccessPoint, sourceURL *url.URL, prefix string) {
 	sig := sourceSignature(ap.Stream)
+	sourcePrivate := h.isSourcePrivate(context.Background(), ap.Stream, sourceURL)
 	s, err := h.Remux.Start(ap.Stream.ID, sig, func(ctx context.Context) (io.ReadCloser, error) {
-		resp, err := h.fetch(ctx, sourceURL, ap.Stream, 0)
+		resp, err := h.fetch(ctx, sourceURL, ap.Stream, sourcePrivate, 0)
 		if err != nil {
 			return nil, err
 		}
@@ -358,7 +408,7 @@ func (h *Handler) serveRemuxEntry(w http.ResponseWriter, ap *store.AccessPoint, 
 		return resp.Body, nil
 	})
 	if err != nil {
-		log.Printf("starting TS remux for stream %d failed", ap.Stream.ID)
+		log.Printf("starting TS remux for stream %d failed: %v", ap.Stream.ID, err)
 		http.Error(w, "remux unavailable", http.StatusBadGateway)
 		return
 	}
@@ -430,10 +480,6 @@ func (h *Handler) touchTokenThrottled(tokenID int64) {
 	if shouldTouch {
 		h.Store.TouchToken(tokenID)
 	}
-}
-
-func sameOrigin(a, b *url.URL) bool {
-	return a.Scheme == b.Scheme && a.Host == b.Host
 }
 
 func stripKnownExt(p string) string {
