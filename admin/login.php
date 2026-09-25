@@ -29,12 +29,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   <div class="sv-panel" style="width:22rem;">
     <div class="sv-brand" style="margin-bottom:1.25rem;"><span class="dot"></span> StreamVault</div>
     <?php if ($error): ?><div class="sv-flash err"><?= h($error) ?></div><?php endif; ?>
-    <form method="post">
+    <form method="post" action="login.php">
       <?= sv_csrf_field() ?>
-      <label>Username</label>
-      <input type="text" name="username" required autofocus>
-      <label>Password</label>
-      <input type="password" name="password" required>
+      <label for="sv-username">Username</label>
+      <input type="text" id="sv-username" name="username" autocomplete="username" required autofocus>
+      <label for="sv-password">Password</label>
+      <input type="password" id="sv-password" name="password" autocomplete="current-password" required>
       <button type="submit" class="btn-primary" style="width:100%;margin-top:1.25rem;">Sign in</button>
     </form>
   </div>
