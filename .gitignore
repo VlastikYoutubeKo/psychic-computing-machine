@@ -1,0 +1,8 @@
+# Runtime DB + encryption key (source credentials at rest). Never commit
+# the key file or the DB (source passwords, access token hashes, incident
+# notes, operator password hashes).
+data/
+
+# Go build artifacts
+gateway/gateway
+gateway/*.test
