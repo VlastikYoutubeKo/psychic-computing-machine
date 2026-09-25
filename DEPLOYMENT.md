@@ -1,13 +1,12 @@
 # Deployment
 
-## Status: not yet deployed to production
+## Status
 
-Everything below the "Native Debian install" section has been **written
-and reasoned through, but not applied to this server**, and several steps
-are explicitly gated on your approval per the project's own autonomy
-rules (production Caddyfile changes, anything that could disrupt an
-existing service). Treat this file as a plan to execute together, not a
-record of what's already live.
+The live Compose file and Caddyfile now contain the StreamVault admin
+integration and gateway service. The stream-facing Caddy cutover has not
+been applied. The GitHub checker timer below is prepared in this repo but
+has not been installed or enabled. Production service changes remain gated
+on the owner's approval.
 
 ## Native Debian install (this host)
 
@@ -71,7 +70,7 @@ this work (not present before).
    video proxying and doesn't need an isolated pool the way sktv's video
    endpoints did.
 
-## Docker Compose variant -- joining the existing stack (validated, not yet applied)
+## Docker Compose variant -- joined to the existing stack
 
 Decided: since StreamVault runs on this exact host, plugging into the
 *existing* `docker-compose.yml` / `caddy-net` (option (a) from the earlier
@@ -106,8 +105,8 @@ directory wasn't `www-data`-writable, and a `.backup` call stripped
 `chown -R 33:33 streamvault/data` on the host satisfies both containers
 instead of juggling ACLs.
 
-**`docker-compose.yml` changes needed** (not yet applied -- this is the
-exact diff to review before it lands):
+**`docker-compose.yml` integration** (already present in the live file;
+shown here for reference):
 
 ```yaml
   caddy:
@@ -147,7 +146,49 @@ siblings on disk the way `admin/includes/config.php` assumes
 (`SV_ROOT = dirname(admin dir)`). The gateway container only gets
 `./streamvault/data`, since its binary is already built into the image.
 
-**Caddyfile addition** (not yet applied): see "Production cutover" below
+## GitHub Leak Checker timer (prepared, not installed)
+
+`gateway/Dockerfile` now builds both `streamvault-gateway` and
+`streamvault-leakchecker` into the same image. The proposed
+`deploy/systemd/streamvault-leakchecker.service` runs the checker as a
+temporary Compose container using the existing gateway service's DB/key
+mount and UID 33. It does not restart the running gateway, modify Caddy,
+or expose a new port. The host's systemd process invokes Docker as root;
+the checker itself runs as UID 33 inside the container. The GitHub PAT
+stays encrypted in SQLite and is never placed in a unit file or command
+line.
+
+`deploy/systemd/streamvault-leakchecker.timer` starts a check about one
+minute after boot and one minute after each invocation finishes. Each
+invocation first checks SQLite: it scans only when a manual request is
+pending or 20 minutes have passed since the last run. Long scans therefore
+do not overlap; the database lock remains a second safeguard. A manual
+request made during a running scan waits for that scan and the next timer
+tick. The Go scan itself has a 10-minute deadline; systemd allows up to
+12 minutes for container startup and cleanup.
+
+After the owner approves enabling this production timer and the GitHub
+PAT/base URL are configured, install it with:
+
+```bash
+cd /root/caddy-setup
+docker compose build streamvault-gateway
+install -m 0644 streamvault/deploy/systemd/streamvault-leakchecker.service /etc/systemd/system/
+install -m 0644 streamvault/deploy/systemd/streamvault-leakchecker.timer /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now streamvault-leakchecker.timer
+```
+
+The build updates the image used by future one-shot checker containers;
+it does not recreate the already-running gateway container. Verify with
+`systemctl status streamvault-leakchecker.timer`,
+`journalctl -u streamvault-leakchecker.service -n 50 --no-pager`, and the
+admin's Leak Checker coverage panel. A clean systemd exit only means the
+one-shot process completed: inspect `leak_checker_runs.error` in the admin
+for API failures or partial coverage. To stop scheduling, use
+`systemctl disable --now streamvault-leakchecker.timer`.
+
+**Caddyfile admin addition** (present in the live file): see "Production cutover" below
 for `help.iptvlookup.com` specifically -- it's an *additive* new site
 block, not a change to any existing one, so it doesn't carry the same
 risk as the `restream.mxnticek.eu` cutover, but recreating the `caddy` and
@@ -162,7 +203,7 @@ live on separate domains added later, each needing just one more
 `reverse_proxy streamvault-gateway:8090` block, no further gateway
 changes.
 
-## Admin UI on help.iptvlookup.com (approved by the project owner in chat, 2026-09-25 -- applied once Codex's review of the current changes is done)
+## Admin UI on help.iptvlookup.com (configuration present in the live stack)
 
 Unlike the `restream.mxnticek.eu` cutover below, this one has explicit
 sign-off already: `help.iptvlookup.com` hosts the StreamVault **admin UI
@@ -192,7 +233,8 @@ This mirrors the existing `karty.cyn.cz` block exactly (same shared
 `php-fpm`, same `root`+`php_fastcgi`+`file_server` shape) -- nothing novel
 in the Caddy config itself, just a new hostname.
 
-Steps to actually go live, in order:
+Integration and verification checklist (configuration entries 2 and 3 are
+already present; this section is retained as a deployment reference):
 
 1. `mkdir -p streamvault/data && chown -R 33:33 streamvault/data` on the
    host (see "Docker Compose variant" above for why UID 33).

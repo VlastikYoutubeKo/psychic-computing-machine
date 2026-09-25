@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 )
 
@@ -144,26 +145,35 @@ func (sc *Scanner) searchAndRecord(ctx context.Context, ap AccessPointInfo, quer
 		return fmt.Errorf("stopped early: GitHub search rate limit exhausted after %d access points", sum.StreamsChecked), queryErrors, incompleteQueries, recordErrors
 	}
 
-	issueResults, issueMeta, err := sc.GitHub.SearchIssues(ctx, query, time.Time{})
-	sum.QueriesMade++
-	if err != nil {
-		if errors.Is(err, ErrRateLimited) {
+	// Issues and PRs are two separate queries -- GitHub's search API
+	// rejects a query with neither `is:issue` nor `is:pr` outright (see
+	// SearchIssues's doc comment). Spec section 12 wants both covered.
+	for _, kind := range []string{"issue", "pr"} {
+		issueResults, issueMeta, err := sc.GitHub.SearchIssues(ctx, query, time.Time{}, kind)
+		sum.QueriesMade++
+		if err != nil {
+			if errors.Is(err, ErrRateLimited) {
+				return fmt.Errorf("stopped early: GitHub search rate limit exhausted after %d access points", sum.StreamsChecked), queryErrors, incompleteQueries, recordErrors
+			}
+			log.Printf("leakcheck: %s search for access point %d failed: %v", kind, ap.ID, err)
+			queryErrors++
+		}
+		if issueMeta.Incomplete {
+			log.Printf("leakcheck: GitHub reported incomplete %s search results for access point %d", kind, ap.ID)
+			incompleteQueries++
+		}
+		source := issueSource
+		if kind == "pr" {
+			source = strings.Replace(issueSource, "issue", "pr", 1)
+		}
+		for _, r := range issueResults {
+			if !sc.recordIfMatch(ap, r.Title+"\n"+r.Body, source, r.HTMLURL, sum) {
+				recordErrors++
+			}
+		}
+		if issueMeta.RateLimit.Remaining == 0 {
 			return fmt.Errorf("stopped early: GitHub search rate limit exhausted after %d access points", sum.StreamsChecked), queryErrors, incompleteQueries, recordErrors
 		}
-		log.Printf("leakcheck: issue search for access point %d failed: %v", ap.ID, err)
-		queryErrors++
-	}
-	if issueMeta.Incomplete {
-		log.Printf("leakcheck: GitHub reported incomplete issue search results for access point %d", ap.ID)
-		incompleteQueries++
-	}
-	for _, r := range issueResults {
-		if !sc.recordIfMatch(ap, r.Title+"\n"+r.Body, issueSource, r.HTMLURL, sum) {
-			recordErrors++
-		}
-	}
-	if issueMeta.RateLimit.Remaining == 0 {
-		return fmt.Errorf("stopped early: GitHub search rate limit exhausted after %d access points", sum.StreamsChecked), queryErrors, incompleteQueries, recordErrors
 	}
 	return nil, queryErrors, incompleteQueries, recordErrors
 }

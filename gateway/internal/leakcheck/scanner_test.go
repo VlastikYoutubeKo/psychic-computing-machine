@@ -146,7 +146,7 @@ func TestScannerEndToEndFindsAndDedupesConfirmedLeak(t *testing.T) {
 	if findingCount != 1 {
 		t.Fatalf("expected still exactly 1 leak_findings row after re-scan, got %d", findingCount)
 	}
-	if callCount < 4 { // 2 queries (code+issue) per run x 2 runs
+	if callCount < 6 { // 3 queries (code+issue+pr) per run x 2 runs
 		t.Fatalf("expected the mock GitHub server to actually be called, got %d calls", callCount)
 	}
 }

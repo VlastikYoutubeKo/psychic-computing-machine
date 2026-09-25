@@ -145,6 +145,37 @@ func TestErrorsNeverContainTheQuery(t *testing.T) {
 	})
 }
 
+// Regression test for a bug only the real GitHub API surfaced (no mock
+// enforced this): /search/issues now rejects any query with neither
+// `is:issue` nor `is:pr` with a 422, where it used to default to
+// searching both. Found by running an actual end-to-end scan against a
+// real GitHub issue, not by any test in this package.
+func TestSearchIssuesRejectsInvalidKind(t *testing.T) {
+	c := NewClient("")
+	c.BaseURL = "http://unused.invalid" // must fail before any request is made
+	if _, _, err := c.SearchIssues(context.Background(), "x", time.Time{}, "bogus"); err == nil {
+		t.Fatal("expected an error for an invalid kind")
+	}
+}
+
+func TestSearchIssuesPRKindSetsQualifier(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		w.Write([]byte(`{"items":[]}`))
+	}))
+	defer srv.Close()
+
+	c := NewClient("")
+	c.BaseURL = srv.URL
+	if _, _, err := c.SearchIssues(context.Background(), "x", time.Time{}, "pr"); err != nil {
+		t.Fatalf("SearchIssues: %v", err)
+	}
+	if !strings.Contains(gotQuery, "is%3Apr") && !strings.Contains(gotQuery, "is:pr") {
+		t.Fatalf("expected an is:pr qualifier, got %s", gotQuery)
+	}
+}
+
 func TestSearchIssuesIncludesSinceFilter(t *testing.T) {
 	var gotQuery string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -157,12 +188,15 @@ func TestSearchIssuesIncludesSinceFilter(t *testing.T) {
 	c := NewClient("")
 	c.BaseURL = srv.URL
 	since := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	results, _, err := c.SearchIssues(context.Background(), `"restream.example.com/live/nova"`, since)
+	results, _, err := c.SearchIssues(context.Background(), `"restream.example.com/live/nova"`, since, "issue")
 	if err != nil {
 		t.Fatalf("SearchIssues: %v", err)
 	}
 	if !strings.Contains(gotQuery, "updated%3A%3E2026-01-01") && !strings.Contains(gotQuery, "updated:>2026-01-01") {
 		t.Fatalf("expected an updated:> filter in query, got %s", gotQuery)
+	}
+	if !strings.Contains(gotQuery, "is%3Aissue") && !strings.Contains(gotQuery, "is:issue") {
+		t.Fatalf("expected an is:issue qualifier (GitHub rejects issue search without one), got %s", gotQuery)
 	}
 	if len(results) != 1 || !strings.Contains(results[0].Body, "deadbeef") {
 		t.Fatalf("unexpected results: %+v", results)

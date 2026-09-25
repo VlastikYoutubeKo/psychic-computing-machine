@@ -1,5 +1,53 @@
 # Changelog
 
+## 2026-09-25 (later) -- First real end-to-end verification against live GitHub
+
+The project owner configured a real GitHub PAT (dedicated account) and
+asked for an actual test: a real stream/access point/token was created in
+the live `help.iptvlookup.com` admin, a fictional leaked URL for it was
+posted in a real GitHub issue
+(github.com/VlastikYoutubeKo/psychic-computing-machine/issues/1), and the
+checker was run against the live GitHub API for the first time.
+
+**It found a real bug no mocked test had caught**: GitHub's
+`/search/issues` endpoint now rejects any query with neither `is:issue`
+nor `is:pr` (HTTP 422 `"Query must include 'is:issue' or
+'is:pull-request'"`) -- it used to default to searching both. Every
+`httptest`-mocked test in this repo happily returned whatever the mock
+was told to return, so nothing caught that the real endpoint's validation
+rules had changed underneath the client. Fixed: `Client.SearchIssues` now
+takes a required `kind` ("issue" or "pr") and always sets the matching
+`is:` qualifier; `Scanner` calls it twice per query (spec section 12 asks
+for both issues and PRs covered), tripling per-access-point query count
+from 2 to 3. New tests: `TestSearchIssuesRejectsInvalidKind`,
+`TestSearchIssuesPRKindSetsQualifier`.
+
+After the fix, the full pipeline worked correctly end to end against the
+real issue: a `Confirmed`-confidence finding was recorded with the raw
+token properly redacted (verified afterward by grepping the live SQLite
+file's raw bytes for the token string -- zero matches), linked to the
+correct stream/access point/token, and opened an incident at `probable`
+(not auto-confirmed, as designed). `gateway_base_url` was also updated to
+`https://rest.iptvlookup.com` per the owner's stated plan for where actual
+stream traffic will live (distinct from `help.iptvlookup.com`, which
+stays admin-only). The test stream, access point, token, incident, and
+finding were deleted afterward; the GitHub issue was left open (the
+configured PAT lacks permission to close/comment on issues) for the owner
+to close manually. `leak_checker_runs` history includes both the failing
+(pre-fix) and succeeding (post-fix) live runs, kept rather than scrubbed.
+
+## 2026-09-25 -- Prepared GitHub checker timer
+
+- Added a Dockerfile build step for the one-shot
+  `streamvault-leakchecker` binary in the existing gateway image and
+  added systemd service/timer files under
+  `deploy/systemd/`. The timer invokes a temporary Compose container
+  about a minute after each completion; the checker itself scans only for queued requests or when
+  its 20-minute interval is due.
+- Documented installation and verification without touching the live
+  Compose/Caddy configuration or enabling a production service. A live
+  GitHub scan still awaits the dedicated PAT.
+
 ## 2026-09-25 -- Phase 6 PHP configuration and coverage UI
 
 - Added GitHub PAT entry in Settings, encrypted with the existing shared

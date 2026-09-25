@@ -36,8 +36,9 @@ say so explicitly, in the UI itself.
   These actions do not revoke tokens or rotate source credentials.
 - **GitHub Leak Checker code** (`gateway/cmd/leakchecker/`): a one-shot scan
   over active access points, with extra queries for enabled repositories and
-  organizations. Local tests use a mock API. A production timer and live
-  GitHub scan have not been verified.
+  organizations. Local tests use a mock API. A systemd timer is prepared in
+  `deploy/systemd/`, but has not been installed; no live GitHub scan has
+  been verified.
 
 ## What's explicitly NOT implemented yet
 
@@ -88,7 +89,7 @@ PHP 8.4 CLI / 8.2-fpm.
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) -- design decisions and why
 - [SECURITY.md](SECURITY.md) -- threat model, what's actually enforced today
-- [DEPLOYMENT.md](DEPLOYMENT.md) -- production cutover plan (**not yet applied** -- see file)
+- [DEPLOYMENT.md](DEPLOYMENT.md) -- current integration and pending production cutover/timer
 - [ROADMAP.md](ROADMAP.md) -- phase-by-phase status
 - [CHANGELOG.md](CHANGELOG.md)
 - [AGENTS.md](AGENTS.md) -- context handoff for whoever (human or AI) picks this up next

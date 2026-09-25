@@ -47,7 +47,8 @@ tvh.cyn.cz {
 Anyone who can reach these hostnames can currently hit the real Restreamer
 / Tvheadend backend directly -- this is precisely the problem StreamVault
 is meant to solve (hide the source, require a token, allow revocation).
-**No change has been made to this file.** Cutting `restream.mxnticek.eu`
+The admin-only `help.iptvlookup.com` block was added later; these two
+stream-facing blocks remain unchanged. Cutting `restream.mxnticek.eu`
 (or a new subdomain) over to point at the StreamVault gateway instead is a
 production Caddy change and requires explicit approval before it happens
 -- see DEPLOYMENT.md "Production cutover (not yet applied)". Flagging it

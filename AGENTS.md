@@ -85,6 +85,7 @@ importantly, from breaking things that already work.
   tests/                          -- bash-driven integration tests, see README.md "Tests"
     e2e_incidents.sh               -- manual incident creation/triage through the real PHP admin
     e2e_leak_admin.sh              -- GitHub token/source settings and scan request, no external API calls
+  deploy/systemd/                  -- prepared one-shot checker service and timer; not installed
   discord-bot/                    -- empty, Phase 9, not started
 ```
 

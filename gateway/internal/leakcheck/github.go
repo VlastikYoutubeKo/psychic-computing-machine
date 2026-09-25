@@ -205,11 +205,23 @@ type issueSearchResponse struct {
 	} `json:"items"`
 }
 
-// SearchIssues searches issues and PRs. since, if non-zero, restricts to
-// items updated after that time (incremental scanning per leak_sources /
-// leak_checker_runs bookkeeping).
-func (c *Client) SearchIssues(ctx context.Context, query string, since time.Time) ([]IssueResult, SearchMeta, error) {
-	q := query
+// SearchIssues searches either issues or pull requests -- never both in one
+// call. kind must be "issue" or "pr": GitHub's search API used to default
+// to both when neither was specified, but now rejects the request outright
+// (422 "Query must include 'is:issue' or 'is:pull-request'") if a query
+// carries no `is:` qualifier at all. Found by running this against the
+// real API for the first time, not by any mocked test -- there was
+// nothing in the httptest mocks enforcing GitHub's actual validation
+// rules. Callers wanting both (spec section 12 asks for issues *and*
+// PRs) call this twice; see scanner.go.
+//
+// since, if non-zero, restricts to items updated after that time
+// (incremental scanning per leak_sources / leak_checker_runs bookkeeping).
+func (c *Client) SearchIssues(ctx context.Context, query string, since time.Time, kind string) ([]IssueResult, SearchMeta, error) {
+	if kind != "issue" && kind != "pr" {
+		return nil, SearchMeta{}, fmt.Errorf("leakcheck: SearchIssues: kind must be \"issue\" or \"pr\", got %q", kind)
+	}
+	q := query + " is:" + kind
 	if !since.IsZero() {
 		q += " updated:>" + since.UTC().Format("2006-01-02T15:04:05Z")
 	}

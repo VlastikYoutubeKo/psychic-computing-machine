@@ -237,8 +237,13 @@ project already committed to**: `access_tokens` stores only
 checker therefore cannot search external sources for "our secret URL"
 directly -- there is no secret on file to search for. Instead:
 
-1. It searches GitHub (code search + issue/PR search) for an exact-phrase
-   anchor: `base_url + "/" + access_point.public_path`. This is safe to
+1. It searches GitHub: one code search, plus *two* issue searches (issues
+   and pull requests are separate queries -- GitHub's `/search/issues`
+   rejects a query with neither `is:issue` nor `is:pr` outright, a
+   validation rule change only discovered by running against the real
+   API; see the "first real end-to-end verification" entry in
+   CHANGELOG.md) for an exact-phrase anchor:
+   `base_url + "/" + access_point.public_path`. This is safe to
    send in a search query because `public_path` is not itself a secret
    for an ordinary stream (only the token that follows it is) -- except
    for the "long random path IS the secret" pattern from spec section 1,
@@ -342,17 +347,26 @@ Each GitHub search currently reads only the first page (30 results).
 The run status does not measure matches beyond that page, so a clean run
 does not imply exhaustive GitHub coverage.
 
-**Verification status**: the entire matching/scanning/locking pipeline is
-covered by tests against an `httptest` mock GitHub server (25 test
-functions in `gateway/internal/leakcheck`, including two dedicated to
-proving a secret path never reaches an error or a log line) and the PHP
-admin side has its own HTTP end-to-end test (`tests/e2e_leak_admin.sh`)
--- neither makes a real call to `api.github.com`. **No test has run
-against the real GitHub API with a real token as of this writing.** The
-project owner is providing a dedicated-account Personal Access Token for
-that; until it's in place and a real scan has been observed end to end,
-treat GitHub search integration as tested-in-isolation, not
-field-verified.
+**Verification status**: the matching/scanning/locking pipeline is covered
+by tests against an `httptest` mock GitHub server (31 test functions in
+`gateway/internal/leakcheck`, including three dedicated to proving a
+secret path never reaches an error or a log line, and two proving the
+`is:issue`/`is:pr` requirement is enforced) and the PHP admin side has its
+own HTTP end-to-end test (`tests/e2e_leak_admin.sh`). Those never call
+`api.github.com`, and mocks only enforce what they're told to -- which is
+exactly how the `is:issue`/`is:pr` requirement above went unnoticed until
+a real run against the live API surfaced it as an outright 422.
+
+**A real, live end-to-end run has since been observed and worked
+correctly** (see CHANGELOG.md's "First real end-to-end verification"
+entry): a genuine GitHub issue containing a fictional leaked URL for a
+real (test) stream/token was created, scanned with a real GitHub PAT, and
+correctly produced a `Confirmed` finding with the token properly redacted
+and an incident opened at `probable`, all verified directly against the
+live database and admin UI, not just a test assertion. What that single
+run does *not* establish: GitLab (not implemented), the systemd timer
+running unattended over time, behavior against a large result set instead
+of a hand-crafted one, or rate-limit exhaustion under real load.
 
 ## What was deliberately deferred
 

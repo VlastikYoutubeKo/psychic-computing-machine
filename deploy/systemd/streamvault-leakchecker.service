@@ -1,0 +1,16 @@
+[Unit]
+Description=StreamVault GitHub leak scan (one-shot)
+Documentation=file:/root/caddy-setup/streamvault/DEPLOYMENT.md
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+RequiresMountsFor=/root/caddy-setup/streamvault/data
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/caddy-setup
+# Compose reuses the gateway image's UID 33, DB/key mount and environment.
+# --rm overrides its restart policy and leaves no idle checker container.
+ExecStart=/usr/bin/docker compose -f /root/caddy-setup/docker-compose.yml run --rm --no-deps -T --entrypoint /usr/local/bin/streamvault-leakchecker streamvault-gateway
+TimeoutStartSec=12min
+UMask=0077
