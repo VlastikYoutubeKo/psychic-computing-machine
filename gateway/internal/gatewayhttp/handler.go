@@ -260,24 +260,50 @@ func sourceSignature(s store.Stream) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// The entry fetch deliberately does not use r.Context() or a finite
+// timeout, even though a plain HLS manifest fetch would only need a few
+// seconds: we don't know until *after* sniffing the response whether this
+// is HLS (in which case the fetch is done in milliseconds regardless) or
+// MPEG-TS (in which case this exact response body gets handed to a
+// long-running remux session that can legitimately keep reading from it
+// for hours). An earlier version used a fresh, separate fetch for that
+// handoff instead of reusing this one -- which meant every MPEG-TS
+// stream's *first* request to its entry point cost two nearly back-to-back
+// requests to the source. That's exactly the pattern that got this
+// project's own first real production stream rate-limited by its origin
+// (see CHANGELOG.md): many single-use-redirect CDN sources penalize or
+// simply can't service a second immediate hit. Reusing the sniffed
+// response instead of re-fetching removes the double hit entirely.
+//
+// Accepted trade-off: with no deadline on the body-read phase, a
+// source that responds but then drips bytes arbitrarily slowly could tie
+// up this request indefinitely. The source is admin-configured, not
+// attacker-supplied input -- the same trust boundary this project already
+// leans on elsewhere (see SECURITY.md) -- so this is judged an acceptable
+// risk rather than one worth a bespoke read-deadline mechanism right now.
 func (h *Handler) serveEntry(w http.ResponseWriter, r *http.Request, ap *store.AccessPoint, sourceEntry *url.URL, prefix string) {
 	if s := h.Remux.Existing(ap.Stream.ID, sourceSignature(ap.Stream)); s != nil {
 		h.writeRemuxPlaylist(w, ap, s, prefix)
 		return
 	}
 	sourcePrivate := h.isSourcePrivate(r.Context(), ap.Stream, sourceEntry)
-	resp, err := h.fetch(r.Context(), sourceEntry, ap.Stream, sourcePrivate, 20*time.Second)
+	resp, err := h.fetch(context.Background(), sourceEntry, ap.Stream, sourcePrivate, 0)
 	if err != nil {
 		log.Printf("fetching source for stream %d failed", ap.Stream.ID)
 		http.Error(w, "upstream unavailable", http.StatusBadGateway)
 		return
 	}
-	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
+		resp.Body.Close()
 		http.Error(w, "upstream error", http.StatusBadGateway)
 		return
 	}
-	h.sniffAndServe(w, resp, resp.Request.URL, prefix, ap, true)
+	if !h.sniffAndServe(w, resp, resp.Request.URL, prefix, ap, true) {
+		resp.Body.Close()
+	}
+	// else: ownership of resp.Body was transferred to a remux session
+	// (see sniffAndServe/serveRemuxEntry) -- it will be closed when that
+	// session ends, not here.
 }
 
 func (h *Handler) serveResource(w http.ResponseWriter, r *http.Request, ap *store.AccessPoint, sourceEntry, target *url.URL, prefix string) {
@@ -343,17 +369,22 @@ const (
 	maxPlaylistSize = 4 * 1024 * 1024 // generous headroom for even a huge master playlist; this host runs low on RAM
 )
 
-func (h *Handler) sniffAndServe(w http.ResponseWriter, resp *http.Response, manifestURL *url.URL, prefix string, ap *store.AccessPoint, entry bool) {
+// sniffAndServe returns true if it transferred ownership of resp.Body to a
+// background remux session (the caller must then not close it) -- see
+// serveEntry's doc comment for why the response is reused rather than
+// re-fetched.
+func (h *Handler) sniffAndServe(w http.ResponseWriter, resp *http.Response, manifestURL *url.URL, prefix string, ap *store.AccessPoint, entry bool) bool {
 	head := make([]byte, sniffLimit)
 	n, err := io.ReadFull(resp.Body, head)
 	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
 		http.Error(w, "upstream read error", http.StatusBadGateway)
-		return
+		return false
 	}
 	head = head[:n]
 	if entry && remux.LooksLikeMPEGTS(head) {
-		h.serveRemuxEntry(w, ap, manifestURL, prefix)
-		return
+		body := &prefixedReadCloser{prefix: head, r: resp.Body, closer: resp.Body}
+		h.serveRemuxEntry(w, ap, body, prefix)
+		return true
 	}
 
 	if hls.IsPlaylist(head) {
@@ -362,24 +393,24 @@ func (h *Handler) sniffAndServe(w http.ResponseWriter, resp *http.Response, mani
 		rest, err := io.ReadAll(io.LimitReader(resp.Body, int64(maxPlaylistSize-len(head)+1)))
 		if err != nil {
 			http.Error(w, "upstream read error", http.StatusBadGateway)
-			return
+			return false
 		}
 		full := append(head, rest...)
 		if len(full) > maxPlaylistSize {
 			log.Printf("rejecting oversized playlist for access point %d (> %d bytes)", ap.ID, maxPlaylistSize)
 			http.Error(w, "upstream playlist too large", http.StatusBadGateway)
-			return
+			return false
 		}
 		rewritten, err := hls.RewritePlaylist(string(full), manifestURL, h.encodeRef(prefix, ap.ID))
 		if err != nil {
 			log.Printf("rewriting playlist for access point %d: %v", ap.ID, err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
-			return
+			return false
 		}
 		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 		w.Header().Set("Cache-Control", "no-store")
 		_, _ = w.Write([]byte(rewritten))
-		return
+		return false
 	}
 
 	if ct := resp.Header.Get("Content-Type"); ct != "" {
@@ -389,24 +420,55 @@ func (h *Handler) sniffAndServe(w http.ResponseWriter, resp *http.Response, mani
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(head)
 	_, _ = io.Copy(w, resp.Body) // streamed, never buffered: segments can be large
+	return false
 }
 
-// A TS source is probed with a short-lived request first. The remux session
-// opens its own request so its lifetime is independent of this HTTP response.
-func (h *Handler) serveRemuxEntry(w http.ResponseWriter, ap *store.AccessPoint, sourceURL *url.URL, prefix string) {
+// prefixedReadCloser re-serves bytes already consumed from a reader (via
+// an earlier Read, e.g. for format sniffing) before continuing to read
+// from it directly, then closes closer when the caller is done. Lets
+// sniffAndServe hand a partially-read HTTP response body to a remux
+// session without losing the bytes already consumed for detection.
+type prefixedReadCloser struct {
+	prefix []byte
+	off    int
+	r      io.Reader
+	closer io.Closer
+}
+
+func (p *prefixedReadCloser) Read(buf []byte) (int, error) {
+	if p.off < len(p.prefix) {
+		n := copy(buf, p.prefix[p.off:])
+		p.off += n
+		return n, nil
+	}
+	return p.r.Read(buf)
+}
+
+func (p *prefixedReadCloser) Close() error {
+	return p.closer.Close()
+}
+
+// serveRemuxEntry starts (or, if body ends up unused because a concurrent
+// request already started one, discards) a remux session fed by body --
+// the same response serveEntry already fetched and sniffed, its ownership
+// now transferred here. See serveEntry's doc comment for why this reuses
+// that response instead of fetching a fresh one: a second immediate
+// request to the same entry point is exactly what got this project's own
+// first real production stream rate-limited by its origin.
+func (h *Handler) serveRemuxEntry(w http.ResponseWriter, ap *store.AccessPoint, body io.ReadCloser, prefix string) {
 	sig := sourceSignature(ap.Stream)
-	sourcePrivate := h.isSourcePrivate(context.Background(), ap.Stream, sourceURL)
+	used := false
 	s, err := h.Remux.Start(ap.Stream.ID, sig, func(ctx context.Context) (io.ReadCloser, error) {
-		resp, err := h.fetch(ctx, sourceURL, ap.Stream, sourcePrivate, 0)
-		if err != nil {
-			return nil, err
-		}
-		if resp.StatusCode >= 400 {
-			resp.Body.Close()
-			return nil, fmt.Errorf("upstream returned status %d", resp.StatusCode)
-		}
-		return resp.Body, nil
+		used = true
+		return body, nil
 	})
+	if !used {
+		// A concurrent request already has (or just started) a session
+		// for this stream+signature; remux.Manager reused it without
+		// calling our callback. This response's body was never handed
+		// off, so it's ours to close -- nothing else will.
+		body.Close()
+	}
 	if err != nil {
 		log.Printf("starting TS remux for stream %d failed: %v", ap.Stream.ID, err)
 		http.Error(w, "remux unavailable", http.StatusBadGateway)

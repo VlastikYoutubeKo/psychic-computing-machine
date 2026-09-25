@@ -215,7 +215,24 @@ Starting a session may take up to 15 seconds to produce the first segment;
 a source that never yields one returns 502. FFmpeg must be installed on the
 gateway host. MPEG-TS codecs are copied unchanged, so player codec support
 still depends on the original channel. This path has been tested with a real
-FFmpeg-generated TS feed, not yet against the production Tvheadend server.
+FFmpeg-generated TS feed, and, since, against a real production stream
+(see CHANGELOG.md "Fixed a double-fetch...").
+
+**The sniffing fetch is reused for the remux session, never re-fetched.**
+Detecting MPEG-TS requires reading the first bytes of the entry response
+*before* knowing whether it'll be handed to FFmpeg or rewritten as HLS
+text. An earlier version discarded that sniffed response and opened a
+second, independent fetch once MPEG-TS was confirmed -- an extra request
+that a real source (a free/low-quality IPTV aggregator whose entry point
+302s to a single-use, token-bearing CDN URL per request) rate-limited
+outright, since two hits to the entry point in quick succession isn't a
+pattern its own anti-abuse logic tolerates. `serveEntry` now fetches
+without a deadline or the triggering request's context (accepting, in
+exchange, that a source which responds but then drips bytes arbitrarily
+slowly can hang the request -- judged acceptable since the source is
+admin-configured, not attacker-supplied), and `sniffAndServe` hands the
+already-open body (sniffed bytes prepended via `prefixedReadCloser`)
+directly to the remux session instead of signaling "start a new fetch".
 
 ## Secrets
 

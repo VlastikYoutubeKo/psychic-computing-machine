@@ -1,5 +1,43 @@
 # Changelog
 
+## 2026-09-25 (yet even later) -- Fixed a double-fetch that triggered the source's own rate limiting
+
+After the SSRF redirect fix below, `rest.iptvlookup.com/metvtoons.m3u8`
+still 502'd, now with `upstream returned status 429` from the remux path.
+Manually reproducing the exact fetch (same Transport config, standalone)
+against the real source succeeded every time, which ruled out the
+redirect/TLS/header logic -- the difference had to be in *how many*
+requests the gateway actually made.
+
+It was two. `serveEntry` fetches the entry point once to sniff whether
+it's HLS or MPEG-TS; when it turned out to be MPEG-TS, the *sniffed*
+response was discarded and `serveRemuxEntry` opened a **second**,
+independent fetch to feed FFmpeg. For an ordinary source that's just one
+extra request. For this one -- and many similar low-quality/free IPTV
+aggregators -- the entry point 302s to a single-use, token-bearing CDN77
+URL per request, and two requests to the *entry point* in quick
+succession get the second one 429'd by the origin itself. Confirmed by
+watching `docker exec ... wget` succeed cleanly seconds apart while the
+gateway's own two-fetch sequence kept failing.
+
+Fixed by not re-fetching: the sniffed response's body (already-read sniff
+bytes prepended via a new `prefixedReadCloser`, then the rest of the
+original body) is now handed directly to the remux session instead of
+being discarded. This required decoupling the entry fetch from the
+triggering request's context and its 20s timeout (`gateway/internal/gatewayhttp/handler.go`
+`serveEntry`'s doc comment has the full reasoning and the accepted
+trade-off: a source that responds but drips bytes arbitrarily slowly can
+now hang the request with no deadline -- accepted because the source is
+admin-configured, not attacker-supplied, same trust boundary as
+elsewhere in this project). New regression test in
+`TestMPEGTSIsRemuxedToHLSAndTokenRevocationStillApplies` asserts exactly
+one request reaches the source for the entry fetch.
+
+After this fix and a rebuild/redeploy, `rest.iptvlookup.com/metvtoons.m3u8`
+served a real HLS manifest (200) and a real ~770 KB video segment (200)
+end to end against the live source -- StreamVault's first stream actually
+serving real video through the gateway in production.
+
 ## 2026-09-25 (even later) -- Fixed SSRF redirect policy against a real stream
 
 The project owner set up a real production stream (`rest.iptvlookup.com`,

@@ -459,7 +459,9 @@ func TestMPEGTSIsRemuxedToHLSAndTokenRevocationStillApplies(t *testing.T) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("generating MPEG-TS: %v: %s", err, out)
 	}
+	var sourceHits atomic.Int32
 	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sourceHits.Add(1)
 		http.ServeFile(w, r, tsPath)
 	}))
 	defer source.Close()
@@ -476,6 +478,16 @@ func TestMPEGTSIsRemuxedToHLSAndTokenRevocationStillApplies(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 || !strings.Contains(string(body), "#EXTM3U") {
 		t.Fatalf("remux manifest: status=%d body=%s", resp.StatusCode, body)
+	}
+	// Regression check: an earlier version fetched the entry point once to
+	// sniff its format, then a *second* time (a fresh request) to actually
+	// feed ffmpeg -- two back-to-back requests to the same source. That's
+	// exactly the pattern that got this project's own first real
+	// production stream rate-limited by its origin (see CHANGELOG.md "SSRF
+	// redirect policy" / the entry above it on double-fetching). The
+	// sniffed response must be reused, not re-fetched.
+	if got := sourceHits.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 request to the source for the entry fetch, got %d (the sniffed response must be reused for remux, not re-fetched)", got)
 	}
 	var ref string
 	for _, line := range strings.Split(string(body), "\n") {
