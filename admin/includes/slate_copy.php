@@ -10,6 +10,17 @@ const SV_SLATE_REASONS = [
     'temporarily_unavailable' => 'Temporarily unavailable (source failure)',
 ];
 
+// What actually happened, for the AI prompt only. The short labels alone made
+// the model call a permanent revocation "temporarily unavailable".
+const SV_SLATE_REASON_FACTS = [
+    'limited_bandwidth' => 'The stream is paused because its bandwidth or capacity limit was reached; it may come back later.',
+    'not_intended_for_public' => 'This stream is private and was never meant to be publicly shared; this link does not work for the public.',
+    'unauthorized_redistribution' => 'This access link was shared publicly without permission, so it was permanently revoked. It will not work again.',
+    'access_revoked_by_owner' => 'The stream owner revoked access for this link on purpose. It will not work again.',
+    'stream_permanently_discontinued' => 'The stream has been shut down for good and will not return at this address.',
+    'temporarily_unavailable' => 'The upstream source is not responding right now; the stream should return once the source recovers.',
+];
+
 function sv_slate_copy_valid(string $title, string $subtitle): ?array
 {
     $clean = static function (string $value, bool $allowBreak): string {
@@ -67,37 +78,48 @@ function sv_ai_generate(PDO $db, int $operatorId, string $reason, string $langua
     } catch (Throwable $e) { return ['error' => 'OpenRouter key could not be read.']; }
     $model = $db->query("SELECT value FROM settings WHERE key = 'openrouter_model'")->fetchColumn() ?: 'z-ai/glm-5.3-flash';
     $endpoint = getenv('STREAMVAULT_OPENROUTER_URL') ?: 'https://openrouter.ai/api/v1/chat/completions';
+    // GLM 5.x always reasons and can't disable it (HTTP 400); with a small
+    // max_tokens the reasoning ate the whole budget and content came back
+    // null. Low effort + a larger budget keeps replies ~40 tokens / <1 s;
+    // exclude drops the reasoning text from the response.
     $payload = json_encode([
-        'model' => $model, 'temperature' => 0.7, 'max_tokens' => 150,
+        'model' => $model, 'temperature' => 0.7, 'max_tokens' => 800,
+        'reasoning' => ['effort' => 'low', 'exclude' => true],
         'messages' => [
-            ['role' => 'system', 'content' => 'Write neutral, professional IPTV unavailability notices. Return only strict JSON with exactly title and subtitle string fields. Title max 32 Unicode characters; subtitle max 90 Unicode characters and at most two short lines. No URLs, emojis, markdown or blame.'],
-            ['role' => 'user', 'content' => 'Reason: ' . SV_SLATE_REASONS[$reason] . '. Language: ' . ($language === 'cs' ? 'Czech' : 'English') . '. Additional operator guidance: ' . trim($instruction)],
+            ['role' => 'system', 'content' => 'Write neutral, professional IPTV unavailability notices. Return only strict JSON with exactly two string fields: "title" (2 to 4 words, at most 32 characters) and "subtitle" (one short sentence, at most 90 characters). No URLs, emojis, markdown or blame.'],
+            ['role' => 'user', 'content' => 'Reason: ' . SV_SLATE_REASONS[$reason] . '. What happened: ' . SV_SLATE_REASON_FACTS[$reason] . ' Language: ' . ($language === 'cs' ? 'Czech' : 'English') . '. Additional operator guidance: ' . trim($instruction)],
         ],
     ], JSON_THROW_ON_ERROR);
-    $response = '';
-    $ch = curl_init($endpoint);
-    curl_setopt_array($ch, [
-        CURLOPT_POST => true, CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $key, 'Content-Type: application/json'],
-        CURLOPT_POSTFIELDS => $payload, CURLOPT_RETURNTRANSFER => false, CURLOPT_FOLLOWLOCATION => false,
-        CURLOPT_CONNECTTIMEOUT => 5, CURLOPT_TIMEOUT => 20,
-        CURLOPT_WRITEFUNCTION => static function ($handle, string $chunk) use (&$response): int {
-            if (strlen($response) + strlen($chunk) > 16384) return 0;
-            $response .= $chunk; return strlen($chunk);
-        },
-    ]);
-    $ok = curl_exec($ch);
-    $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-    curl_close($ch);
+    // One retry inside the same quota slot: models occasionally overshoot the
+    // length limits or break the JSON shape; each call costs ~$0.00005.
+    $lastError = 'AI suggestion exceeded limits or contained disallowed content.';
+    for ($attempt = 0; $attempt < 2; $attempt++) {
+        $response = '';
+        $ch = curl_init($endpoint);
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true, CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $key, 'Content-Type: application/json'],
+            CURLOPT_POSTFIELDS => $payload, CURLOPT_RETURNTRANSFER => false, CURLOPT_FOLLOWLOCATION => false,
+            CURLOPT_CONNECTTIMEOUT => 5, CURLOPT_TIMEOUT => 20,
+            CURLOPT_WRITEFUNCTION => static function ($handle, string $chunk) use (&$response): int {
+                if (strlen($response) + strlen($chunk) > 16384) return 0;
+                $response .= $chunk; return strlen($chunk);
+            },
+        ]);
+        $ok = curl_exec($ch);
+        $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+        curl_close($ch);
+        if ($ok === false) { unset($key, $encrypted); return ['error' => 'OpenRouter request failed or timed out.']; }
+        if ($status !== 200) { unset($key, $encrypted); return ['error' => match ($status) {401 => 'OpenRouter rejected the key (HTTP 401).', 402 => 'OpenRouter reports insufficient credit (HTTP 402).', 429 => 'OpenRouter rate limit reached (HTTP 429).', default => 'OpenRouter returned HTTP ' . $status . '.'}]; }
+        $body = json_decode($response, true);
+        $content = $body['choices'][0]['message']['content'] ?? null;
+        if (!is_string($content)) { $lastError = 'OpenRouter returned an unexpected response.'; continue; }
+        // Many models wrap JSON in a ```json fence despite instructions; strip it.
+        $content = preg_replace('/^\s*```(?:json)?\s*|\s*```\s*$/i', '', $content) ?? $content;
+        $suggestion = json_decode($content, true);
+        if (!is_array($suggestion) || count($suggestion) !== 2 || !isset($suggestion['title'], $suggestion['subtitle']) || !is_string($suggestion['title']) || !is_string($suggestion['subtitle'])) { $lastError = 'AI response was not valid title/subtitle JSON.'; continue; }
+        $copy = sv_slate_copy_valid($suggestion['title'], $suggestion['subtitle']);
+        if ($copy) { unset($key, $encrypted); return ['copy' => $copy]; }
+    }
     unset($key, $encrypted);
-    if ($ok === false) return ['error' => 'OpenRouter request failed or timed out.'];
-    if ($status !== 200) return ['error' => match ($status) {401 => 'OpenRouter rejected the key (HTTP 401).', 402 => 'OpenRouter reports insufficient credit (HTTP 402).', 429 => 'OpenRouter rate limit reached (HTTP 429).', default => 'OpenRouter returned HTTP ' . $status . '.'}];
-    $body = json_decode($response, true);
-    $content = $body['choices'][0]['message']['content'] ?? null;
-    if (!is_string($content)) return ['error' => 'OpenRouter returned an unexpected response.'];
-    // Many models wrap JSON in a ```json fence despite instructions; strip it.
-    $content = preg_replace('/^\s*```(?:json)?\s*|\s*```\s*$/i', '', $content) ?? $content;
-    $suggestion = json_decode($content, true);
-    if (!is_array($suggestion) || count($suggestion) !== 2 || !isset($suggestion['title'], $suggestion['subtitle']) || !is_string($suggestion['title']) || !is_string($suggestion['subtitle'])) return ['error' => 'AI response was not valid title/subtitle JSON.'];
-    $copy = sv_slate_copy_valid($suggestion['title'], $suggestion['subtitle']);
-    return $copy ? ['copy' => $copy] : ['error' => 'AI suggestion exceeded limits or contained disallowed content.'];
+    return ['error' => $lastError];
 }
