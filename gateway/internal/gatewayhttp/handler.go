@@ -650,7 +650,7 @@ func writeSlatePlaylistKey(w http.ResponseWriter, r *http.Request, variant, key 
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	if r.Method != http.MethodHead {
-		_, _ = io.WriteString(w, "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-STREAM-INF:BANDWIDTH=180000,RESOLUTION=854x480\n/_sv/slate/"+variant+"/"+key+"index.m3u8\n")
+		_, _ = io.WriteString(w, "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-STREAM-INF:BANDWIDTH=600000,RESOLUTION=1920x1080\n/_sv/slate/"+variant+"/"+key+"index.m3u8\n")
 	}
 }
 

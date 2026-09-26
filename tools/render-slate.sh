@@ -10,5 +10,5 @@ for i in $(seq 1 60); do if curl -fsS http://127.0.0.1:9229/json >/dev/null 2>&1
 for variant in unavailable temporarily-unavailable; do
  mkdir "$tmp/$variant"
  node tools/render-slate.js 9229 "$variant" "$tmp/$variant"
- ffmpeg -hide_banner -loglevel error -y -framerate 10 -i "$tmp/$variant/frame%04d.png" -c:v libx264 -preset slow -crf 29 -pix_fmt yuv420p -r 10 -g 20 -keyint_min 20 -sc_threshold 0 -movflags +faststart "gateway/assets/slate/$variant.mp4"
+ ffmpeg -hide_banner -loglevel error -y -framerate 10 -i "$tmp/$variant/frame%04d.png" -vf "scale=1920:1080:flags=lanczos" -c:v libx264 -preset slow -crf 29 -pix_fmt yuv420p -r 10 -g 20 -keyint_min 20 -sc_threshold 0 -movflags +faststart "gateway/assets/slate/$variant.mp4"
 done

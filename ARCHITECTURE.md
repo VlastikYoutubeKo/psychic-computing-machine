@@ -453,7 +453,7 @@ slate. The admin sets these columns on state changes; stream_form.php has no
 status field.
 
 Every session overlays a Europe/Prague live clock and, where known, the
-cut-off time from a 0600 text file. FFmpeg decodes the 854x480 loop at 10 fps
+cut-off time from a 0600 text file. FFmpeg decodes the 1920x1080 loop (rendered from the 854x480 CSS layout at 2.25x) at 10 fps
 and outputs rolling HLS with AAC silence or operator-selected music. Music
 comes from one uploaded file or one HTTP(S) radio URL per session (up to five
 pulls if both generic variants and all personal slots are active). URL input

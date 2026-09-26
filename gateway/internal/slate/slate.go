@@ -299,13 +299,13 @@ func (m *Manager) startLocked(variant string, d descriptor, forceSilent bool) (*
 		return fail(err)
 	}
 	// Dynamic content lives in files; only the fixed localtime expression is parsed.
-	filter := "drawtext=fontfile=" + font + ":text='%{localtime\\:%d.%m.%Y %H\\\\\\:%M\\\\\\:%S}':fontcolor=0xedf3ff:fontsize=18:x=68:y=406"
+	filter := "drawtext=fontfile=" + font + ":text='%{localtime\\:%d.%m.%Y %H\\\\\\:%M\\\\\\:%S}':fontcolor=0xedf3ff:fontsize=46:x=153:y=903"
 	if !d.cutoff.IsZero() {
 		p, e := writeCutoff(dir, d.cutoff)
 		if e != nil {
 			return fail(e)
 		}
-		filter += ",drawtext=fontfile=" + font + ":textfile=" + p + ":fontcolor=0xa8b7d0:fontsize=16:x=68:y=434"
+		filter += ",drawtext=fontfile=" + font + ":textfile=" + p + ":fontcolor=0xa8b7d0:fontsize=38:x=153:y=968"
 	}
 	a := AudioSettings{}
 	if !forceSilent && m.loadAudio != nil {
@@ -320,7 +320,7 @@ func (m *Manager) startLocked(variant string, d descriptor, forceSilent bool) (*
 	}
 	args := []string{"-hide_banner", "-loglevel", "error", "-nostdin", "-re", "-stream_loop", "-1", "-i", asset}
 	args = append(args, audio...)
-	args = append(args, "-vf", filter, "-map", "0:v:0", "-map", "1:a:0", "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage", "-crf", "32", "-pix_fmt", "yuv420p", "-r", "10", "-g", "20", "-keyint_min", "20", "-sc_threshold", "0", "-c:a", "aac", "-b:a", "48k", "-ar", "48000", "-ac", "2", "-af", "volume="+strconv.FormatFloat(float64(a.Volume)/100, 'f', 2, 64), "-threads", "1", "-f", "hls", "-hls_time", "2", "-hls_list_size", "6", "-hls_flags", "delete_segments+omit_endlist+temp_file", "-hls_segment_filename", filepath.Join(dir, "seg%06d.ts"), filepath.Join(dir, "index.m3u8"))
+	args = append(args, "-vf", filter, "-map", "0:v:0", "-map", "1:a:0", "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage", "-crf", "30", "-pix_fmt", "yuv420p", "-r", "10", "-g", "20", "-keyint_min", "20", "-sc_threshold", "0", "-c:a", "aac", "-b:a", "48k", "-ar", "48000", "-ac", "2", "-af", "volume="+strconv.FormatFloat(float64(a.Volume)/100, 'f', 2, 64), "-threads", "1", "-f", "hls", "-hls_time", "2", "-hls_list_size", "6", "-hls_flags", "delete_segments+omit_endlist+temp_file", "-hls_segment_filename", filepath.Join(dir, "seg%06d.ts"), filepath.Join(dir, "index.m3u8"))
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	cmd.Env = append(os.Environ(), "TZ=Europe/Prague")

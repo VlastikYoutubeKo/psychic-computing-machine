@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-09-26 -- Slate in 1080p with larger text; Opus/FLAC audio
+
+- Slate loops are now rendered at 1920x1080 (same 854x480 CSS layout at
+  deviceScaleFactor 2.25) with larger title/subtitle/icon, and the live
+  clock/cut-off overlays scaled to match. Measured in the production image
+  per session: 480p 3.4%, 720p 5.0%, 1080p 8.5% of one core (~400 kbit/s per
+  viewer), so the worst case of 5 concurrent sessions stays under half a core.
+- Slate audio accepts .opus (Opus in Ogg) and .flac.
+
 ## 2026-09-26 -- Leak response is automatic: revoke + GitHub notice
 
 The admin offered "Rotate automatically on confirmed leak" (and
