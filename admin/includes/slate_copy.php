@@ -27,8 +27,13 @@ function sv_slate_copy_valid(string $title, string $subtitle): ?array
 
 function sv_ai_reserve(PDO $db, int $operatorId): bool
 {
-    $db->exec('BEGIN IMMEDIATE');
+    // Insert first: the write takes SQLite's write lock, so concurrent
+    // requests serialize here and each count includes every earlier
+    // reservation. (PDO's beginTransaction(), not exec('BEGIN IMMEDIATE'):
+    // PHP 8.2's PDO doesn't track a raw BEGIN, so commit() threw.)
+    $db->beginTransaction();
     try {
+        $db->prepare('INSERT INTO ai_generation_log(operator_id) VALUES (?)')->execute([$operatorId]);
         $minute = gmdate('Y-m-d\TH:i:s', time() - 60) . '.000Z';
         $day = gmdate('Y-m-d') . 'T00:00:00.000Z';
         $stmt = $db->prepare('SELECT COUNT(*) FROM ai_generation_log WHERE operator_id = ? AND created_at >= ?');
@@ -36,8 +41,10 @@ function sv_ai_reserve(PDO $db, int $operatorId): bool
         $recent = (int) $stmt->fetchColumn();
         $stmt->execute([$operatorId, $day]);
         $daily = (int) $stmt->fetchColumn();
-        if ($recent >= 10 || $daily >= 100) { $db->commit(); return false; }
-        $db->prepare('INSERT INTO ai_generation_log(operator_id) VALUES (?)')->execute([$operatorId]);
+        if ($recent > 10 || $daily > 100) {
+            $db->rollBack();
+            return false;
+        }
         $db->commit();
         return true;
     } catch (Throwable $e) {
