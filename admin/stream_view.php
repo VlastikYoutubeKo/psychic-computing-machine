@@ -22,7 +22,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if ($action === 'toggle_status') {
         $newStatus = $stream['status'] === 'active' ? 'disabled' : 'active';
-        $db->prepare('UPDATE streams SET status = ? WHERE id = ?')->execute([$newStatus, $id]);
+        $db->prepare("UPDATE streams SET status = ?, disabled_at = CASE WHEN ? = 'disabled' THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') ELSE NULL END WHERE id = ?")
+            ->execute([$newStatus, $newStatus, $id]);
         sv_audit('stream_status_changed', "stream:$id", ['status' => $newStatus]);
         sv_flash('ok', "Stream set to $newStatus.");
         sv_redirect("stream_view.php?id=$id");
@@ -59,7 +60,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if ($action === 'revoke_access_point') {
         $apId = (int) $_POST['access_point_id'];
-        $db->prepare('UPDATE access_points SET status = "revoked" WHERE id = ? AND stream_id = ?')->execute([$apId, $id]);
+        $db->prepare("UPDATE access_points SET status = 'revoked', revoked_at = COALESCE(revoked_at, strftime('%Y-%m-%dT%H:%M:%fZ','now')) WHERE id = ? AND stream_id = ?")
+            ->execute([$apId, $id]);
         sv_audit('access_point_revoked', "access_point:$apId");
         sv_flash('ok', 'Access point revoked. Its URL now shows the revoked-stream page.');
         sv_redirect("stream_view.php?id=$id");

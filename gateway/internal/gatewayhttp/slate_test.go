@@ -7,16 +7,24 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 type fakeSlate struct {
 	dir   string
 	calls int
+	key   string
 }
 
-func (f *fakeSlate) GetPath(variant, name string) (string, error) {
+func (f *fakeSlate) GetPath(variant, key, name string) (string, error) {
+	if key != "" && key != f.key {
+		return "", os.ErrNotExist
+	}
 	f.calls++
 	return filepath.Join(f.dir, name), nil
+}
+func (f *fakeSlate) Prepare(variant string, apID, tokenID int64, cutoff time.Time) string {
+	return f.key
 }
 func (*fakeSlate) Close() {}
 
@@ -103,6 +111,37 @@ func TestGlobalSlateRoutingAndNameValidation(t *testing.T) {
 	head := slateRequest(t, h, "HEAD", "/_sv/slate/unavailable/seg000001.ts", "")
 	if head.Code != 200 || head.Body.Len() != 0 {
 		t.Fatalf("HEAD slate segment: %d bytes=%d", head.Code, head.Body.Len())
+	}
+}
+
+func TestPersonalSlateRouteAndTokenValidation(t *testing.T) {
+	h, db := newTestHandler(t)
+	f := installFakeSlate(t, h)
+	f.key = strings.Repeat("a", 40)
+	apID := seedStream(t, db, "https://example.org/index.m3u8", "live/personal", "private")
+	addToken(t, db, apID, "valid-token")
+	if _, err := db.Exec("UPDATE access_tokens SET revoked_at='2026-09-26T17:31:00.000Z' WHERE access_point_id=?", apID); err != nil {
+		t.Fatal(err)
+	}
+	if got := slateRequest(t, h, "GET", "/live/personal/invalid-token.m3u8", "*/*"); got.Code != 404 {
+		t.Fatalf("invalid token: %d", got.Code)
+	}
+	got := slateRequest(t, h, "GET", "/live/personal/valid-token.m3u8", "*/*")
+	want := "/_sv/slate/unavailable/" + f.key + "/index.m3u8"
+	if got.Code != 200 || !strings.Contains(got.Body.String(), want) {
+		t.Fatalf("entry: %d %s", got.Code, got.Body.String())
+	}
+	if got := slateRequest(t, h, "GET", want, ""); got.Code != 200 {
+		t.Fatalf("personal playlist: %d", got.Code)
+	}
+	for _, bad := range []string{
+		"/_sv/slate/unavailable/" + strings.Repeat("b", 40) + "/index.m3u8",
+		"/_sv/slate/unavailable/" + f.key + "/../../secret.key",
+		"/_sv/slate/unavailable/" + f.key + "/seg1.ts",
+	} {
+		if got := slateRequest(t, h, "GET", bad, ""); got.Code != 404 {
+			t.Fatalf("%s: %d", bad, got.Code)
+		}
 	}
 }
 

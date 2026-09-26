@@ -1,61 +1,91 @@
-// Package slate produces a small, shared HLS error stream. It has its own
-// lifecycle and does not consume MPEG-TS remux session slots.
+// Package slate produces shared HLS error streams from pre-rendered artwork.
 package slate
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/netip"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
 
 const (
-	Unavailable = "unavailable"
-	Temporary   = "temporarily-unavailable"
-	idleTime    = 90 * time.Second
-	// After a failed or short-lived encoder, refuse restarts for a while so
-	// a broken ffmpeg/font can't be respawned on every public request.
+	Unavailable    = "unavailable"
+	Temporary      = "temporarily-unavailable"
+	idleTime       = 90 * time.Second
 	restartBackoff = 10 * time.Second
 	shortLived     = 30 * time.Second
+	maxPersonal    = 3
 )
 
-// FFmpeg starts at six digits and grows the counter after long runtimes.
 var segmentName = regexp.MustCompile(`^seg[0-9]{6,9}\.ts$`)
+var opaqueKey = regexp.MustCompile(`^[0-9a-f]{40}$`)
+var audioName = regexp.MustCompile(`^[0-9a-f]{32}\.(mp3|ogg|aac|m4a|wav)$`)
 
-func ValidName(name string) bool       { return name == "index.m3u8" || segmentName.MatchString(name) }
-func ValidVariant(variant string) bool { return variant == Unavailable || variant == Temporary }
+func ValidName(n string) bool    { return n == "index.m3u8" || segmentName.MatchString(n) }
+func ValidVariant(v string) bool { return v == Unavailable || v == Temporary }
+func ValidKey(k string) bool     { return opaqueKey.MatchString(k) }
 
-// Provider is the gateway's boundary to the FFmpeg-dependent manager. Tests
-// supply a fake, so routing and authorization tests never need FFmpeg.
+// An empty key denotes a generic variant. HTTP tests replace this provider.
 type Provider interface {
-	GetPath(variant, name string) (string, error)
+	GetPath(variant, key, name string) (string, error)
+	Prepare(variant string, apID, tokenID int64, cutoff time.Time) string
 	Close()
 }
-
-type session struct {
-	started  time.Time
-	dir      string
-	cancel   context.CancelFunc
-	done     chan struct{}
-	lastUsed time.Time
+type AudioSettings struct {
+	File, URL string
+	Volume    int
 }
-
+type AudioLoader func() (AudioSettings, error)
+type descriptor struct {
+	variant       string
+	apID, tokenID int64
+	cutoff        time.Time
+	lastUsed      time.Time
+}
+type session struct {
+	started   time.Time
+	dir       string
+	cancel    context.CancelFunc
+	done      chan struct{}
+	lastUsed  time.Time
+	usedRadio bool
+}
 type Manager struct {
-	mu       sync.Mutex
-	sessions map[string]*session
-	failedAt map[string]time.Time
-	closed   chan struct{}
-	stopped  bool
+	mu              sync.Mutex
+	secret          [32]byte
+	sessions        map[string]*session
+	personal        map[string]descriptor
+	failedAt        map[string]time.Time
+	radioMuted      map[string]time.Time
+	closed          chan struct{}
+	stopped         bool
+	assets, dataDir string
+	loadAudio       AudioLoader
 }
 
 func NewManager() *Manager {
-	m := &Manager{sessions: make(map[string]*session), failedAt: make(map[string]time.Time), closed: make(chan struct{})}
+	m := &Manager{sessions: map[string]*session{}, personal: map[string]descriptor{}, failedAt: map[string]time.Time{}, radioMuted: map[string]time.Time{}, closed: make(chan struct{}), assets: os.Getenv("STREAMVAULT_SLATE_ASSETS")}
+	if m.assets == "" {
+		m.assets = "../../assets/slate"
+	}
+	if _, err := rand.Read(m.secret[:]); err != nil {
+		panic("slate HMAC random source unavailable")
+	}
 	go func() {
 		tick := time.NewTicker(30 * time.Second)
 		defer tick.Stop()
@@ -70,47 +100,96 @@ func NewManager() *Manager {
 	}()
 	return m
 }
+func (m *Manager) ConfigureAudio(loader AudioLoader, dataDir string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.loadAudio = loader
+	m.dataDir = dataDir
+}
+func (m *Manager) signature(d descriptor) string {
+	mac := hmac.New(sha256.New, m.secret[:])
+	_, _ = fmt.Fprintf(mac, "%s|%d|%d|%s", d.variant, d.apID, d.tokenID, d.cutoff.UTC().Format(time.RFC3339Nano))
+	return hex.EncodeToString(mac.Sum(nil)[:20])
+}
 
-func (m *Manager) GetPath(variant, name string) (string, error) {
-	if !ValidVariant(variant) || !ValidName(name) {
+// Prepare allocates a shared personal slot; callers fall back to generic on cap.
+func (m *Manager) Prepare(variant string, apID, tokenID int64, cutoff time.Time) string {
+	if !ValidVariant(variant) || apID <= 0 || cutoff.IsZero() {
+		return ""
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.stopped {
+		return ""
+	}
+	d := descriptor{variant: variant, apID: apID, tokenID: tokenID, cutoff: cutoff, lastUsed: time.Now()}
+	key := m.signature(d)
+	if old, ok := m.personal[key]; ok {
+		old.lastUsed = time.Now()
+		m.personal[key] = old
+		return key
+	}
+	if len(m.personal) >= maxPersonal {
+		return ""
+	}
+	m.personal[key] = d
+	return key
+}
+func (m *Manager) GetPath(variant, key, name string) (string, error) {
+	if !ValidVariant(variant) || !ValidName(name) || (key != "" && !ValidKey(key)) {
 		return "", os.ErrNotExist
 	}
+	id := variant
+	var d descriptor
 	m.mu.Lock()
 	if m.stopped {
 		m.mu.Unlock()
 		return "", errors.New("slate manager closed")
 	}
-	s := m.sessions[variant]
+	if key != "" {
+		var ok bool
+		d, ok = m.personal[key]
+		if !ok || d.variant != variant || !hmac.Equal([]byte(key), []byte(m.signature(d))) {
+			m.mu.Unlock()
+			return "", os.ErrNotExist
+		}
+		d.lastUsed = time.Now()
+		m.personal[key] = d
+		id = variant + "/" + key
+	}
+	s := m.sessions[id]
 	if s != nil {
 		select {
 		case <-s.done:
-			if time.Since(s.started) < shortLived {
-				m.failedAt[variant] = time.Now()
+			if s.usedRadio {
+				m.radioMuted[id] = time.Now().Add(5 * time.Minute)
+				delete(m.failedAt, id) // restart immediately with silence
+			} else if time.Since(s.started) < shortLived {
+				m.failedAt[id] = time.Now()
 			}
-			delete(m.sessions, variant)
+			delete(m.sessions, id)
 			_ = os.RemoveAll(s.dir)
 			s = nil
 		default:
 		}
 	}
 	if s == nil {
-		if t, ok := m.failedAt[variant]; ok && time.Since(t) < restartBackoff {
+		if t, ok := m.failedAt[id]; ok && time.Since(t) < restartBackoff {
 			m.mu.Unlock()
-			return "", errors.New("slate encoder failed recently; backing off")
+			return "", errors.New("slate encoder backing off")
 		}
 		var err error
-		s, err = m.startLocked(variant)
+		s, err = m.startLocked(variant, d, time.Now().Before(m.radioMuted[id]))
 		if err != nil {
-			m.failedAt[variant] = time.Now()
+			m.failedAt[id] = time.Now()
 			m.mu.Unlock()
 			return "", err
 		}
-		m.sessions[variant] = s
+		m.sessions[id] = s
 	}
 	s.lastUsed = time.Now()
 	p := filepath.Join(s.dir, name)
 	m.mu.Unlock()
-
 	if name == "index.m3u8" {
 		deadline := time.NewTimer(12 * time.Second)
 		defer deadline.Stop()
@@ -122,94 +201,155 @@ func (m *Manager) GetPath(variant, name string) (string, error) {
 			}
 			select {
 			case <-s.done:
-				return "", errors.New("slate encoder exited before writing a playlist")
+				if s.usedRadio {
+					return m.GetPath(variant, key, name)
+				}
+				return "", errors.New("slate encoder exited before playlist")
 			case <-deadline.C:
-				return "", errors.New("slate playlist startup timed out")
+				if s.usedRadio {
+					s.cancel()
+					<-s.done
+					return m.GetPath(variant, key, name)
+				}
+				return "", errors.New("slate playlist startup timeout")
 			case <-tick.C:
 			}
 		}
 	}
 	return p, nil
 }
-
-func (m *Manager) startLocked(variant string) (*session, error) {
+func fontPath() (string, error) {
+	for _, p := range []string{"/usr/share/fonts/dejavu/DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"} {
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
+	}
+	return "", errors.New("slate font unavailable")
+}
+func writeCutoff(dir string, t time.Time) (string, error) {
+	p := filepath.Join(dir, "cutoff.txt")
+	loc, err := time.LoadLocation("Europe/Prague")
+	if err != nil {
+		return "", err
+	}
+	err = os.WriteFile(p, []byte("Cut off: "+t.In(loc).Format("02.01.2006 15:04")), 0600)
+	return p, err
+}
+func audioArgs(a AudioSettings, dataDir string) ([]string, bool, error) {
+	if a.Volume < 0 || a.Volume > 100 {
+		return nil, false, errors.New("invalid volume")
+	}
+	if a.Volume == 0 || a.File == "" && a.URL == "" {
+		return []string{"-re", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"}, false, nil
+	}
+	if a.File != "" {
+		if filepath.Base(a.File) != a.File || !audioName.MatchString(a.File) {
+			return nil, false, errors.New("invalid audio filename")
+		}
+		return []string{"-re", "-stream_loop", "-1", "-i", filepath.Join(dataDir, "slate-audio", a.File)}, false, nil
+	}
+	if err := validateAudioURL(a.URL); err != nil {
+		return nil, false, err
+	}
+	return []string{"-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5", "-reconnect_max_retries", "3", "-rw_timeout", "5000000", "-max_redirects", "0", "-protocol_whitelist", "http,https,tcp,tls", "-i", a.URL}, true, nil
+}
+func validateAudioURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u == nil || !strings.EqualFold(u.Scheme, "http") && !strings.EqualFold(u.Scheme, "https") || u.Hostname() == "" || u.User != nil {
+		return errors.New("invalid radio URL")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip", u.Hostname())
+	if err != nil || len(ips) == 0 {
+		return errors.New("radio host could not be resolved")
+	}
+	for _, ip := range ips {
+		if !publicIP(ip) {
+			return errors.New("radio host resolves to private address")
+		}
+	}
+	return nil
+}
+func publicIP(ip netip.Addr) bool {
+	ip = ip.Unmap()
+	if !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+		return false
+	}
+	if ip.Is4() {
+		b := ip.As4()
+		if b[0] == 0 || b[0] == 100 && b[1] >= 64 && b[1] <= 127 || b[0] >= 224 {
+			return false
+		}
+	}
+	return true
+}
+func (m *Manager) startLocked(variant string, d descriptor, forceSilent bool) (*session, error) {
 	dir, err := os.MkdirTemp("", "streamvault-slate-")
 	if err != nil {
 		return nil, err
 	}
-	// Colours match admin/assets/style.css (--bg, --text, --muted, --faint,
-	// --bad / --warn) so the slate looks like the rest of StreamVault.
-	title, subtitle, accent := "Stream unavailable", "This access URL has been revoked.", "0xff8899"
-	if variant == Temporary {
-		title, subtitle, accent = "Temporarily unavailable", "The source is not responding. Please try again shortly.", "0xffd17a"
+	fail := func(e error) (*session, error) { _ = os.RemoveAll(dir); return nil, e }
+	font, err := fontPath()
+	if err != nil {
+		return fail(err)
 	}
-	titleFile, subFile := filepath.Join(dir, "title.txt"), filepath.Join(dir, "subtitle.txt")
-	if err := os.WriteFile(titleFile, []byte(title), 0600); err != nil {
-		os.RemoveAll(dir)
-		return nil, err
+	asset := filepath.Join(m.assets, variant+".mp4")
+	if _, err = os.Stat(asset); err != nil {
+		return fail(err)
 	}
-	if err := os.WriteFile(subFile, []byte(subtitle), 0600); err != nil {
-		os.RemoveAll(dir)
-		return nil, err
+	// Dynamic content lives in files; only the fixed localtime expression is parsed.
+	filter := "drawtext=fontfile=" + font + ":text='%{localtime\\:%d.%m.%Y %H\\\\\\:%M\\\\\\:%S}':fontcolor=0xedf3ff:fontsize=18:x=68:y=406"
+	if !d.cutoff.IsZero() {
+		p, e := writeCutoff(dir, d.cutoff)
+		if e != nil {
+			return fail(e)
+		}
+		filter += ",drawtext=fontfile=" + font + ":textfile=" + p + ":fontcolor=0xa8b7d0:fontsize=16:x=68:y=434"
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	fontDir := ""
-	for _, candidate := range []string{
-		"/usr/share/fonts/dejavu",          // Alpine image (font-dejavu)
-		"/usr/share/fonts/truetype/dejavu", // Debian development host
-	} {
-		if _, err := os.Stat(filepath.Join(candidate, "DejaVuSans-Bold.ttf")); err == nil {
-			fontDir = candidate
-			break
+	a := AudioSettings{}
+	if !forceSilent && m.loadAudio != nil {
+		if loaded, e := m.loadAudio(); e == nil {
+			a = loaded
 		}
 	}
-	if fontDir == "" {
-		cancel()
-		os.RemoveAll(dir)
-		return nil, errors.New("slate font unavailable")
+	audio, radio, e := audioArgs(a, m.dataDir)
+	if e != nil {
+		a = AudioSettings{}
+		audio, radio, _ = audioArgs(a, m.dataDir)
 	}
-	regular, bold := filepath.Join(fontDir, "DejaVuSans.ttf"), filepath.Join(fontDir, "DejaVuSans-Bold.ttf")
-	filter := fmt.Sprintf("drawbox=x=(iw-72)/2:y=ih/2-96:w=72:h=5:color=%s:t=fill,"+
-		"drawtext=fontfile=%s:textfile=%s:fontcolor=0xedf3ff:fontsize=46:x=(w-text_w)/2:y=h/2-64,"+
-		"drawtext=fontfile=%s:textfile=%s:fontcolor=0xa8b7d0:fontsize=24:x=(w-text_w)/2:y=h/2+10,"+
-		"drawtext=fontfile=%s:text=STREAMVAULT:fontcolor=0x8192ae:fontsize=16:x=(w-text_w)/2:y=h-56",
-		accent, bold, titleFile, regular, subFile, bold)
-	cmd := exec.CommandContext(ctx, "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
-		// -re on both synthetic inputs: without it lavfi generates as fast as
-		// the CPU allows (a full core, and a "live" playlist minutes ahead).
-		"-re", "-f", "lavfi", "-i", "color=c=0x090e19:s=854x480:r=5",
-		"-re", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
-		"-vf", filter, "-map", "0:v:0", "-map", "1:a:0",
-		"-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
-		"-crf", "32", "-pix_fmt", "yuv420p", "-r", "5", "-g", "10", "-keyint_min", "10", "-sc_threshold", "0",
-		"-c:a", "aac", "-b:a", "48k", "-ar", "48000", "-ac", "2", "-threads", "1",
-		"-f", "hls", "-hls_time", "2", "-hls_list_size", "6",
-		"-hls_flags", "delete_segments+omit_endlist+temp_file",
-		"-hls_segment_filename", filepath.Join(dir, "seg%06d.ts"), filepath.Join(dir, "index.m3u8"))
+	args := []string{"-hide_banner", "-loglevel", "error", "-nostdin", "-re", "-stream_loop", "-1", "-i", asset}
+	args = append(args, audio...)
+	args = append(args, "-vf", filter, "-map", "0:v:0", "-map", "1:a:0", "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage", "-crf", "32", "-pix_fmt", "yuv420p", "-r", "10", "-g", "20", "-keyint_min", "20", "-sc_threshold", "0", "-c:a", "aac", "-b:a", "48k", "-ar", "48000", "-ac", "2", "-af", "volume="+strconv.FormatFloat(float64(a.Volume)/100, 'f', 2, 64), "-threads", "1", "-f", "hls", "-hls_time", "2", "-hls_list_size", "6", "-hls_flags", "delete_segments+omit_endlist+temp_file", "-hls_segment_filename", filepath.Join(dir, "seg%06d.ts"), filepath.Join(dir, "index.m3u8"))
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+	cmd.Env = append(os.Environ(), "TZ=Europe/Prague")
 	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
-	if err := cmd.Start(); err != nil {
+	if err = cmd.Start(); err != nil {
 		cancel()
-		os.RemoveAll(dir)
-		return nil, fmt.Errorf("starting slate ffmpeg: %w", err)
+		return fail(fmt.Errorf("starting slate ffmpeg: %w", err))
 	}
-	s := &session{started: time.Now(), dir: dir, cancel: cancel, done: make(chan struct{}), lastUsed: time.Now()}
+	s := &session{started: time.Now(), dir: dir, cancel: cancel, done: make(chan struct{}), lastUsed: time.Now(), usedRadio: radio}
 	go func() { _ = cmd.Wait(); close(s.done) }()
 	return s, nil
 }
-
 func (m *Manager) ReapIdle() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for variant, s := range m.sessions {
+	for id, s := range m.sessions {
 		if time.Since(s.lastUsed) <= idleTime {
 			continue
 		}
-		delete(m.sessions, variant)
+		delete(m.sessions, id)
 		s.cancel()
 		go func() { <-s.done; _ = os.RemoveAll(s.dir) }()
 	}
+	for key, d := range m.personal {
+		if time.Since(d.lastUsed) > idleTime {
+			delete(m.personal, key)
+		}
+	}
 }
-
 func (m *Manager) Close() {
 	m.mu.Lock()
 	if m.stopped {

@@ -72,7 +72,7 @@ func New(st *store.Store, key []byte) (*Handler, error) {
 	if err != nil {
 		return nil, fmt.Errorf("gatewayhttp: initializing blob codec: %w", err)
 	}
-	return &Handler{
+	h := &Handler{
 		Store: st,
 		Key:   key,
 		Codec: codec,
@@ -87,7 +87,12 @@ func New(st *store.Store, key []byte) (*Handler, error) {
 		Resolve:          hostResolvesToPrivate,
 		lastTouch:        make(map[int64]time.Time),
 		sourceTrustCache: make(map[int64]sourceTrustEntry),
-	}, nil
+	}
+	h.Slate.(*slate.Manager).ConfigureAudio(func() (slate.AudioSettings, error) {
+		file, streamURL, volume, err := st.SlateAudioSettings()
+		return slate.AudioSettings{File: file, URL: streamURL, Volume: volume}, err
+	}, st.DataDir())
+	return h, nil
 }
 
 // isSourcePrivate reports whether stream s's own configured source_url is
@@ -149,6 +154,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var tokenInfo store.TokenInfo
 	if ap.Visibility == "private" {
 		info, err := h.Store.ValidateToken(ap.ID, tokenRaw)
 		if err != nil {
@@ -156,18 +162,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
+		tokenInfo = info
 		switch info.Status {
 		case store.TokenInvalid:
 			http.NotFound(w, r) // never reveal whether the path itself is real
 			return
 		case store.TokenRevoked, store.TokenExpired:
-			h.writeReplacement(w, r, ap.Stream, remainder == "")
+			h.writeReplacement(w, r, ap, tokenInfo, remainder == "")
 			return
 		}
 		h.touchTokenThrottled(info.ID)
 	}
 	if ap.Stream.Status == "disabled" || ap.Status == "revoked" {
-		h.writeReplacement(w, r, ap.Stream, remainder == "")
+		h.writeReplacement(w, r, ap, tokenInfo, remainder == "")
 		return
 	}
 
@@ -581,9 +588,25 @@ var replacementReasons = map[string]string{
 	"stream_permanently_discontinued": "Stream permanently discontinued.",
 }
 
-func (h *Handler) writeReplacement(w http.ResponseWriter, r *http.Request, s store.Stream, entry bool) {
+func (h *Handler) writeReplacement(w http.ResponseWriter, r *http.Request, ap *store.AccessPoint, token store.TokenInfo, entry bool) {
+	s := ap.Stream
 	if entry && wantsSlate(r) {
-		writeSlatePlaylist(w, r, slate.Unavailable)
+		var stamp string
+		switch {
+		case token.RevokedAt.Valid:
+			stamp = token.RevokedAt.String
+		case token.Status == store.TokenExpired && token.ExpiresAt.Valid:
+			stamp = token.ExpiresAt.String
+		case ap.RevokedAt.Valid:
+			stamp = ap.RevokedAt.String
+		case s.DisabledAt.Valid:
+			stamp = s.DisabledAt.String
+		}
+		key := ""
+		if cutoff, err := time.Parse(time.RFC3339Nano, stamp); err == nil {
+			key = h.Slate.Prepare(slate.Unavailable, ap.ID, token.ID, cutoff)
+		}
+		writeSlatePlaylistKey(w, r, slate.Unavailable, key)
 		return
 	}
 	reason := replacementReasons[s.ReplacementReason]
@@ -616,23 +639,42 @@ func wantsSlate(r *http.Request) bool {
 }
 
 func writeSlatePlaylist(w http.ResponseWriter, r *http.Request, variant string) {
+	writeSlatePlaylistKey(w, r, variant, "")
+}
+
+func writeSlatePlaylistKey(w http.ResponseWriter, r *http.Request, variant, key string) {
+	if key != "" {
+		key += "/"
+	}
 	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	if r.Method != http.MethodHead {
-		_, _ = io.WriteString(w, "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-STREAM-INF:BANDWIDTH=180000,RESOLUTION=854x480\n/_sv/slate/"+variant+"/index.m3u8\n")
+		_, _ = io.WriteString(w, "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-STREAM-INF:BANDWIDTH=180000,RESOLUTION=854x480\n/_sv/slate/"+variant+"/"+key+"index.m3u8\n")
 	}
 }
 
 func (h *Handler) serveSlate(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/"), "/")
-	if len(parts) != 4 || parts[0] != "_sv" || parts[1] != "slate" ||
-		!slate.ValidVariant(parts[2]) || !slate.ValidName(parts[3]) {
+	if (len(parts) != 4 && len(parts) != 5) || parts[0] != "_sv" || parts[1] != "slate" ||
+		!slate.ValidVariant(parts[2]) {
 		http.NotFound(w, r)
 		return
 	}
-	p, err := h.Slate.GetPath(parts[2], parts[3])
+	key, name := "", parts[3]
+	if len(parts) == 5 {
+		key, name = parts[3], parts[4]
+	}
+	if !slate.ValidName(name) || key != "" && !slate.ValidKey(key) {
+		http.NotFound(w, r)
+		return
+	}
+	p, err := h.Slate.GetPath(parts[2], key, name)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			http.NotFound(w, r)
+			return
+		}
 		log.Printf("slate %s unavailable: %v", parts[2], err)
 		http.Error(w, "slate unavailable", http.StatusServiceUnavailable)
 		return
@@ -648,13 +690,13 @@ func (h *Handler) serveSlate(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if parts[3] == "index.m3u8" {
+	if name == "index.m3u8" {
 		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 	} else {
 		w.Header().Set("Content-Type", "video/mp2t")
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	http.ServeContent(w, r, parts[3], info.ModTime(), f)
+	http.ServeContent(w, r, name, info.ModTime(), f)
 }
 
 // noticePNG is the image embedded in public GitHub replies (see

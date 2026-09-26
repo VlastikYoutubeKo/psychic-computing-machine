@@ -433,6 +433,39 @@ run does *not* establish: GitLab (not implemented), the systemd timer
 running unattended over time, behavior against a large result set instead
 of a hand-crafted one, or rate-limit exhaustion under real load.
 
+## Slate v2: animated shared replacement streams
+
+The editable artwork is in `gateway/assets/slate/slate.html`. Its
+`window.renderAt(t)` sets all motion from a 12-second periodic time function.
+`tools/render-slate.sh` uses a throwaway Chromium container and FFmpeg to
+produce two committed MP4 loops. Production never runs a browser.
+
+The gateway lazily starts one FFmpeg encoder per generic variant, plus up to
+three personal unavailable sessions shared by viewers of the same revoked
+URL. A process-local HMAC over variant, access point, token ID and cut-off
+time yields an opaque route key. Sessions and temp files are reaped after 90
+seconds idle; short-lived failures back off for 10 seconds.
+
+Cut-off precedence is token revoked_at (or expires_at for expiry), access
+point revoked_at, then stream disabled_at. Migration 0004 adds the latter
+two. Existing disabled/revoked rows remain NULL and use a generic clock-only
+slate. The admin sets these columns on state changes; stream_form.php has no
+status field.
+
+Every session overlays a Europe/Prague live clock and, where known, the
+cut-off time from a 0600 text file. FFmpeg decodes the 854x480 loop at 10 fps
+and outputs rolling HLS with AAC silence or operator-selected music. Music
+comes from one uploaded file or one HTTP(S) radio URL per session (up to five
+pulls if both generic variants and all personal slots are active). URL input
+forbids redirects and private/reserved addresses. A failed radio session
+restarts promptly with silence and suppresses radio retries for five minutes.
+Other short-lived encoder failures back off for 10 seconds. Changes apply to new
+sessions. Public broadcasts of music require rights.
+
+Player entry requests for revoked/disabled/expired access receive HTTP 200,
+so status-code-only monitoring cannot distinguish them from live streams.
+Invalid private tokens remain 404; HTML requests retain 410.
+
 ## What was deliberately deferred
 
 See ROADMAP.md for the full phase list. Notably: no Caddy config has been

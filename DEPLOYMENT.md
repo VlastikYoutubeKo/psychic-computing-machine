@@ -326,6 +326,23 @@ Until that happens, StreamVault can be fully built, tested, and used on
 a *new*, not-yet-linked hostname/path without touching the existing
 `restream.mxnticek.eu` traffic at all.
 
+## Slate v2 deployment notes
+
+Apply migration 0004 through the normal PHP admin migration runner before
+recreating the gateway; the new gateway reads its timestamp columns. The
+Dockerfile copies pre-rendered MP4s and adds tzdata; no Chromium is present
+at runtime. The admin creates /data/slate-audio with mode 0770 and uploaded
+files are 0640. Both containers run as UID 33 and share streamvault/data.
+The local admin/.user.ini requests upload_max_filesize=26M and
+post_max_size=27M so the app's 25 MiB cap is reachable. Confirm PHP-FPM
+honors per-directory .user.ini files in production; otherwise configure
+these two limits in the PHP pool. Existing sessions adopt changed audio
+settings after they become idle and restart.
+
+Regenerate artwork in development with `sh tools/render-slate.sh`, review
+both MP4s, then commit them. The renderer needs zenika/alpine-chrome:latest,
+local Node ws, and FFmpeg. Production needs none of those renderer tools.
+
 ## Backup / restore
 
 Not yet built. The whole of StreamVault's state is one SQLite file plus

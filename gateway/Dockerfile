@@ -16,9 +16,10 @@ FROM alpine:3.20
 # image builds and starts fine but silently fails only when a stream turns
 # out to be MPEG-TS -- caught by rebuilding and smoke-testing this image
 # specifically, not just running `go build` locally.
-RUN apk add --no-cache ffmpeg font-dejavu
+RUN apk add --no-cache ffmpeg font-dejavu tzdata
 COPY --from=build /out/streamvault-gateway /usr/local/bin/streamvault-gateway
 COPY --from=build /out/streamvault-leakchecker /usr/local/bin/streamvault-leakchecker
+COPY assets/slate/unavailable.mp4 assets/slate/temporarily-unavailable.mp4 /usr/local/share/streamvault/slate/
 # UID 33 matches www-data in the project's existing php-fpm image (Dockerfile.php,
 # based on the official Debian php:8.2-fpm), which also reads/writes the shared
 # SQLite file under ./streamvault/data on the host. Running as the same UID here
@@ -28,5 +29,6 @@ COPY --from=build /out/streamvault-leakchecker /usr/local/bin/streamvault-leakch
 # incident (euroklic) caused by exactly this kind of mismatch.
 USER 33:33
 ENV STREAMVAULT_LISTEN=0.0.0.0:8090
+ENV STREAMVAULT_SLATE_ASSETS=/usr/local/share/streamvault/slate
 EXPOSE 8090
 ENTRYPOINT ["/usr/local/bin/streamvault-gateway"]

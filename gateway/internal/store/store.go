@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -18,7 +19,8 @@ import (
 var ErrNotFound = errors.New("store: not found")
 
 type Store struct {
-	db *sql.DB
+	db   *sql.DB
+	path string
 }
 
 // Open opens the shared SQLite database in WAL mode. It does not run
@@ -34,10 +36,39 @@ func Open(path string) (*Store, error) {
 	if err := db.Ping(); err != nil {
 		return nil, fmt.Errorf("store: opening %s: %w", path, err)
 	}
-	return &Store{db: db}, nil
+	return &Store{db: db, path: path}, nil
 }
 
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error    { return s.db.Close() }
+func (s *Store) DataDir() string { return filepath.Dir(s.path) }
+
+// SlateAudioSettings reads only the few operator-controlled values used at
+// session startup. The manager validates the filename/URL independently.
+func (s *Store) SlateAudioSettings() (file, streamURL string, volume int, err error) {
+	rows, err := s.db.Query(`SELECT key, value FROM settings WHERE key IN ('slate_audio_file','slate_audio_url','slate_audio_volume')`)
+	if err != nil {
+		return "", "", 0, err
+	}
+	defer rows.Close()
+	volume = 0
+	for rows.Next() {
+		var key, value string
+		if err = rows.Scan(&key, &value); err != nil {
+			return "", "", 0, err
+		}
+		switch key {
+		case "slate_audio_file":
+			file = value
+		case "slate_audio_url":
+			streamURL = value
+		case "slate_audio_volume":
+			if _, err = fmt.Sscanf(value, "%d", &volume); err != nil {
+				return "", "", 0, err
+			}
+		}
+	}
+	return file, streamURL, volume, rows.Err()
+}
 
 // Stream is the subset of streams columns the gateway needs to fetch and
 // authenticate to the source.
@@ -49,6 +80,7 @@ type Stream struct {
 	SourceUsername     sql.NullString
 	SourcePasswordEnc  sql.NullString
 	Status             string
+	DisabledAt         sql.NullString
 	ReplacementReason  string
 	ReplacementMessage sql.NullString
 }
@@ -61,6 +93,7 @@ type AccessPoint struct {
 	Visibility   string // public|private
 	OutputFormat string
 	Status       string // active|revoked
+	RevokedAt    sql.NullString
 	Stream       Stream
 }
 
@@ -71,18 +104,18 @@ type AccessPoint struct {
 // here.
 func (s *Store) ResolveAccessPoint(publicPath string) (*AccessPoint, error) {
 	row := s.db.QueryRow(`
-		SELECT ap.id, ap.stream_id, ap.public_path, ap.visibility, ap.output_format, ap.status,
+		SELECT ap.id, ap.stream_id, ap.public_path, ap.visibility, ap.output_format, ap.status, ap.revoked_at,
 		       st.id, st.name, st.source_type, st.source_url, st.source_username,
-		       st.source_password_enc, st.status, st.replacement_reason, st.replacement_message
+		       st.source_password_enc, st.status, st.disabled_at, st.replacement_reason, st.replacement_message
 		FROM access_points ap
 		JOIN streams st ON st.id = ap.stream_id
 		WHERE ap.public_path = ?`, publicPath)
 
 	var ap AccessPoint
 	if err := row.Scan(
-		&ap.ID, &ap.StreamID, &ap.PublicPath, &ap.Visibility, &ap.OutputFormat, &ap.Status,
+		&ap.ID, &ap.StreamID, &ap.PublicPath, &ap.Visibility, &ap.OutputFormat, &ap.Status, &ap.RevokedAt,
 		&ap.Stream.ID, &ap.Stream.Name, &ap.Stream.SourceType, &ap.Stream.SourceURL,
-		&ap.Stream.SourceUsername, &ap.Stream.SourcePasswordEnc, &ap.Stream.Status,
+		&ap.Stream.SourceUsername, &ap.Stream.SourcePasswordEnc, &ap.Stream.Status, &ap.Stream.DisabledAt,
 		&ap.Stream.ReplacementReason, &ap.Stream.ReplacementMessage,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -105,8 +138,10 @@ const (
 )
 
 type TokenInfo struct {
-	ID     int64
-	Status TokenStatus
+	ID        int64
+	Status    TokenStatus
+	RevokedAt sql.NullString
+	ExpiresAt sql.NullString
 }
 
 // ValidateToken hashes rawToken and checks it against access_tokens for the
@@ -131,11 +166,11 @@ func (s *Store) ValidateToken(accessPointID int64, rawToken string) (TokenInfo, 
 		return TokenInfo{}, err
 	}
 	if revokedAt.Valid {
-		return TokenInfo{ID: id, Status: TokenRevoked}, nil
+		return TokenInfo{ID: id, Status: TokenRevoked, RevokedAt: revokedAt, ExpiresAt: expiresAt}, nil
 	}
 	if expiresAt.Valid {
 		if t, err := time.Parse(time.RFC3339Nano, expiresAt.String); err == nil && time.Now().After(t) {
-			return TokenInfo{ID: id, Status: TokenExpired}, nil
+			return TokenInfo{ID: id, Status: TokenExpired, ExpiresAt: expiresAt}, nil
 		}
 	}
 	return TokenInfo{ID: id, Status: TokenValid}, nil

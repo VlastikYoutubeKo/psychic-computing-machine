@@ -81,6 +81,17 @@ whether/when the cutover happens.
 | Scan request from admin | `Scan now` writes a timestamp to SQLite. The web process does not execute a shell command or access the Docker socket. A separate timer/one-shot checker is required; pending state and run errors are displayed from the DB so a queued request is not shown as a completed scan. |
 | Discord bot token hardcoded in `docker-compose.yml` | **Not a StreamVault issue, but live and unresolved as of this writing** -- see "Independent review before production cutover" above. Rotate and move to `.env`. |
 
+## Slate v2 boundary
+
+Slate v2 personal routes use a process-local HMAC key; the URL does not
+expose IDs or timestamps but acts as a bearer URL while valid. Music uploads
+use extension and magic-byte validation, a 25 MiB cap, randomized names,
+and 0640 files outside the web root. Radio URLs must be HTTP(S), resolve to
+public addresses at session start, and use zero redirects plus FFmpeg's
+protocol whitelist. FFmpeg resolves the hostname again when opening it,
+leaving DNS rebinding as a residual risk for operator-entered URLs. Public
+broadcast music requires appropriate rights.
+
 ## Deferred hardening (known gaps, not yet addressed)
 
 - **Login rate limiting / lockout**: production deployment should add a

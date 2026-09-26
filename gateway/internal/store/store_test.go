@@ -31,6 +31,13 @@ func openTestDB(t *testing.T) *Store {
 	if _, err := raw.Exec(string(schema)); err != nil {
 		t.Fatalf("applying schema: %v", err)
 	}
+	patch, err := os.ReadFile("../../../migrations/0004_slate_timestamps.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(string(patch)); err != nil {
+		t.Fatal(err)
+	}
 	raw.Close()
 
 	st, err := Open(dbPath)

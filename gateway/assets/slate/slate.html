@@ -1,0 +1,33 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=854,initial-scale=1">
+<style>
+*{box-sizing:border-box}html,body{width:854px;height:480px;margin:0;overflow:hidden;background:#090e19;color:#edf3ff;font-family:"DejaVu Sans",Arial,sans-serif}
+body{position:relative;--accent:#ff8899;--tint:rgba(255,136,153,.16);--edge:rgba(255,136,153,.42);--glow-x:12%;--glow-y:8%;--pulse:1;--rise:0px}
+body.temporary{--accent:#ffd17a;--tint:rgba(255,209,122,.14);--edge:rgba(255,209,122,.42)}
+.card{position:absolute;inset:14px;border:2px solid #1d2a42;border-radius:26px;background:radial-gradient(500px 330px at var(--glow-x) var(--glow-y),var(--tint),transparent 70%),radial-gradient(420px 320px at 100% 100%,rgba(129,170,255,.12),transparent 70%),linear-gradient(135deg,#0d1424,#090e19)}
+.grid{position:absolute;inset:14px;border-radius:26px;opacity:.35;background-image:linear-gradient(#16213a 1px,transparent 1px),linear-gradient(90deg,#16213a 1px,transparent 1px);background-size:40px 40px;-webkit-mask-image:linear-gradient(90deg,transparent,#000 55%,#000)}
+.accent{position:absolute;left:14px;top:82px;bottom:82px;width:7px;border-radius:0 8px 8px 0;background:var(--accent);box-shadow:0 0 30px var(--edge);transform:scaleY(var(--pulse))}
+.icon{position:absolute;left:64px;top:153px;width:96px;height:96px;border-radius:26px;background:var(--tint);border:2px solid var(--edge);display:flex;align-items:center;justify-content:center;transform:translateY(var(--rise))}.icon svg{width:57px;height:57px;stroke:var(--accent)}
+.text{position:absolute;left:188px;right:44px;top:142px;transform:translateY(var(--rise))}.eyebrow{font-size:14px;letter-spacing:.22em;font-weight:700;color:var(--accent);text-transform:uppercase;margin-bottom:15px}h1{margin:0;font-size:43px;line-height:1.08;font-weight:800;letter-spacing:-.025em}p{margin:14px 0 0;font-size:18px;line-height:1.35;color:#a8b7d0;white-space:nowrap}
+.divider{position:absolute;left:68px;right:68px;top:390px;height:1px;background:#1d2a42}.mark{position:absolute;right:65px;bottom:50px;font-size:12px;font-weight:700;letter-spacing:.22em;color:#8192ae}.mark span{display:inline-block;width:7px;height:7px;border-radius:50%;background:#81aaff;margin-right:7px;vertical-align:2px;box-shadow:0 0 10px #81aaff}
+</style>
+<div class="card"></div><div class="grid"></div><div class="accent"></div>
+<div class="icon"><svg id="icon" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 17H7A5 5 0 0 1 7 7h2"/><path d="M15 7h2a5 5 0 0 1 4 8"/><line x1="8" y1="12" x2="12" y2="12"/><line x1="2" y1="2" x2="22" y2="22"/></svg></div>
+<div class="text"><div class="eyebrow" id="eyebrow">LINK REVOKED</div><h1 id="title">Stream unavailable</h1><p id="subtitle">This access URL has been revoked.</p></div>
+<div class="divider"></div><div class="mark"><span></span>STREAMVAULT</div>
+<script>
+const variant=new URLSearchParams(location.search).get('variant');
+if(variant==='temporarily-unavailable'){
+ document.body.classList.add('temporary');
+ document.getElementById('eyebrow').textContent='SOURCE PAUSED';
+ document.getElementById('title').textContent='Temporarily unavailable';
+ document.getElementById('subtitle').textContent='The source is not responding. Please try again shortly.';
+ document.getElementById('icon').innerHTML='<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>';
+}
+// The visual state is purely periodic. renderAt(12) equals renderAt(0).
+window.renderAt=function(t){const p=2*Math.PI*((t%12+12)%12)/12;
+ document.body.style.setProperty('--glow-x',(13+5*Math.cos(p))+'%');
+ document.body.style.setProperty('--glow-y',(9+6*Math.sin(p))+'%');
+ document.body.style.setProperty('--pulse',(0.93+0.07*Math.cos(p)).toFixed(5));
+ document.body.style.setProperty('--rise',(1.5*Math.sin(p)).toFixed(5)+'px');
+};window.renderAt(0);
+</script></html>

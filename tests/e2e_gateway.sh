@@ -32,6 +32,7 @@ sleep 1
 echo "== 3. Building scratch SQLite DB with a private access point =="
 DB="$WORK/streamvault.sqlite"
 sqlite3 "$DB" < "$ROOT/migrations/0001_init.sql"
+sqlite3 "$DB" < "$ROOT/migrations/0004_slate_timestamps.sql"
 sqlite3 "$DB" "INSERT INTO streams (name, source_type, source_url) VALUES ('E2E Nova', 'hls', 'http://127.0.0.1:$SOURCE_PORT/index.m3u8');"
 STREAM_ID=$(sqlite3 "$DB" "SELECT id FROM streams WHERE name='E2E Nova';")
 sqlite3 "$DB" "INSERT INTO access_points (stream_id, public_path, visibility) VALUES ($STREAM_ID, 'live/e2e', 'private');"
@@ -117,7 +118,7 @@ echo "== 9. Revoking the token must switch the player entry to slate and block o
 sqlite3 "$DB" "UPDATE access_tokens SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = (SELECT id FROM access_tokens WHERE access_point_id=$AP_ID);"
 CODE=$(curl -s -o "$WORK/revoked.m3u8" -w "%{http_code}" "http://127.0.0.1:$GATEWAY_PORT/live/e2e/$RAW_TOKEN.m3u8")
 check "revoked player entry status" "200" "$CODE"
-grep -q '/_sv/slate/unavailable/index.m3u8' "$WORK/revoked.m3u8" || { echo "FAIL: revoked entry did not point to slate"; FAIL=1; }
+grep -Eq '/_sv/slate/unavailable/([0-9a-f]{40}/)?index.m3u8' "$WORK/revoked.m3u8" || { echo "FAIL: revoked entry did not point to slate"; FAIL=1; }
 CODE=$(curl -s -H 'Accept: text/html' -o /dev/null -w "%{http_code}" "http://127.0.0.1:$GATEWAY_PORT/live/e2e/$RAW_TOKEN.m3u8")
 check "revoked browser entry status" "410" "$CODE"
 CODE=$(curl -s -o /dev/null -w "%{http_code}" "$SEG_URL")

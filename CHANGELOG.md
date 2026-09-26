@@ -395,3 +395,13 @@ this same working tree; verified by re-running the full test suite
 - Left untouched, deliberately: production Caddyfile, any existing
   service, firewall/network config. Nothing in this entry required
   destructive or production-affecting action.
+## 2026-09-26 -- Slate v2 (review branch)
+
+- Added deterministic HTML/CSS/JS artwork and committed looping MP4s for
+  unavailable and temporary variants.
+- Added live Prague clock, timestamped personal slates with a three-session
+  cap and opaque HMAC routes, and additive transition timestamps.
+- Added admin audio upload/radio URL/volume controls with magic-byte and
+  gateway-side URL checks. Failed radio sessions restart muted and defer
+  radio retries for five minutes.
+- No production container, Caddyfile or Compose changes.
