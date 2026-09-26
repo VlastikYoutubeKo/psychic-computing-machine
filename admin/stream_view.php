@@ -176,7 +176,7 @@ require __DIR__ . '/includes/layout_top.php';
         <code><?= h($fullPath) ?></code>
       </div>
       <?php if ($ap['status'] === 'active'): ?>
-        <form method="post" data-confirm="Revoke this access point? Its URL will show the revoked-stream page instead of the stream.">
+        <form method="post" data-confirm="Revoke this access point? Players will receive the shared unavailable stream; browsers will see the revoked-stream page.">
           <?= sv_csrf_field() ?>
           <input type="hidden" name="action" value="revoke_access_point">
           <input type="hidden" name="access_point_id" value="<?= $ap['id'] ?>">

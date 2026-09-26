@@ -38,9 +38,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <title>Sign in · StreamVault</title>
 <link rel="stylesheet" href="assets/style.css">
 </head>
-<body style="display:flex;align-items:center;justify-content:center;height:100vh;">
-  <div class="sv-panel" style="width:22rem;">
-    <div class="sv-brand" style="margin-bottom:1.25rem;"><span class="dot"></span> StreamVault</div>
+<body class="sv-login-body">
+  <div class="sv-panel sv-login-card">
+    <div class="sv-brand"><span class="dot"></span> StreamVault</div>
+    <h1 class="sv-login-title">Welcome back</h1>
+    <p class="sv-login-subtitle">Sign in to manage your streams and incident response.</p>
     <div id="sv-login-error" class="sv-flash err"<?= $error ? '' : ' hidden' ?>><?= h($error) ?></div>
     <form id="sv-login" name="login" method="post" action="login.php" autocomplete="on">
       <?= sv_csrf_field() ?>

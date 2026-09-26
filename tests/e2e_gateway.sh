@@ -3,7 +3,7 @@
 # generates a real HLS VOD with ffmpeg, serves it as a stand-in "source",
 # points the gateway at it through a scratch SQLite DB, and exercises the
 # full lifecycle: valid token -> rewritten manifest -> segment fetch works,
-# wrong token -> 404, revoked token -> 410. Safe to run repeatedly; each run
+# wrong token -> 404, revoked player entry -> slate 200, revoked segment -> 410. Safe to run repeatedly; each run
 # uses a fresh temp dir and picks free ports.
 set -euo pipefail
 
@@ -113,10 +113,13 @@ FORGED=$(python3 -c "import base64; print(base64.urlsafe_b64encode(b'http://169.
 CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$GATEWAY_PORT/live/e2e/$RAW_TOKEN/r/$FORGED")
 check "hand-crafted blob status" "404" "$CODE"
 
-echo "== 9. Revoking the token must immediately block both manifest AND already-known segment URLs =="
+echo "== 9. Revoking the token must switch the player entry to slate and block old segment URLs =="
 sqlite3 "$DB" "UPDATE access_tokens SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = (SELECT id FROM access_tokens WHERE access_point_id=$AP_ID);"
-CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$GATEWAY_PORT/live/e2e/$RAW_TOKEN.m3u8")
-check "revoked token entry status" "410" "$CODE"
+CODE=$(curl -s -o "$WORK/revoked.m3u8" -w "%{http_code}" "http://127.0.0.1:$GATEWAY_PORT/live/e2e/$RAW_TOKEN.m3u8")
+check "revoked player entry status" "200" "$CODE"
+grep -q '/_sv/slate/unavailable/index.m3u8' "$WORK/revoked.m3u8" || { echo "FAIL: revoked entry did not point to slate"; FAIL=1; }
+CODE=$(curl -s -H 'Accept: text/html' -o /dev/null -w "%{http_code}" "http://127.0.0.1:$GATEWAY_PORT/live/e2e/$RAW_TOKEN.m3u8")
+check "revoked browser entry status" "410" "$CODE"
 CODE=$(curl -s -o /dev/null -w "%{http_code}" "$SEG_URL")
 check "revoked token segment status (must not keep streaming)" "410" "$CODE"
 

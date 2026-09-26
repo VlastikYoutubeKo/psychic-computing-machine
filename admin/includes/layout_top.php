@@ -15,18 +15,20 @@ $activeNav ??= '';
 </head>
 <body>
 <div class="sv-shell">
-  <nav class="sv-nav">
+  <nav class="sv-nav" aria-label="Main navigation">
     <div class="sv-brand"><span class="dot"></span> StreamVault</div>
-    <a href="index.php" class="<?= $activeNav === 'dashboard' ? 'active' : '' ?>">Dashboard</a>
-    <a href="streams.php" class="<?= $activeNav === 'streams' ? 'active' : '' ?>">Streams</a>
-    <a href="incidents.php" class="<?= $activeNav === 'incidents' ? 'active' : '' ?>">Incidents</a>
-    <a href="settings.php" class="<?= $activeNav === 'settings' ? 'active' : '' ?>">Settings</a>
+    <div class="sv-nav-label">Workspace</div>
+    <a href="index.php" class="<?= $activeNav === 'dashboard' ? 'active' : '' ?>" <?= $activeNav === 'dashboard' ? 'aria-current="page"' : '' ?>><span class="sv-nav-icon" aria-hidden="true">◫</span>Dashboard</a>
+    <a href="streams.php" class="<?= $activeNav === 'streams' ? 'active' : '' ?>" <?= $activeNav === 'streams' ? 'aria-current="page"' : '' ?>><span class="sv-nav-icon" aria-hidden="true">▶</span>Streams</a>
+    <a href="incidents.php" class="<?= $activeNav === 'incidents' ? 'active' : '' ?>" <?= $activeNav === 'incidents' ? 'aria-current="page"' : '' ?>><span class="sv-nav-icon" aria-hidden="true">◇</span>Incidents</a>
+    <a href="settings.php" class="<?= $activeNav === 'settings' ? 'active' : '' ?>" <?= $activeNav === 'settings' ? 'aria-current="page"' : '' ?>><span class="sv-nav-icon" aria-hidden="true">⚙</span>Settings</a>
+    <div class="sv-nav-foot">STREAMVAULT · CONTROL PANEL</div>
   </nav>
   <main class="sv-main">
     <div class="sv-topbar">
-      <div></div>
+      <div class="sv-location">Workspace / <?= h($pageTitle) ?></div>
       <?php if (!empty($operator)): ?>
-        <div class="user"><?= h($operator['username']) ?> · <a href="logout.php">Log out</a></div>
+        <div class="user"><strong><?= h($operator['username']) ?></strong><a href="logout.php">Log out</a></div>
       <?php endif; ?>
     </div>
     <?php if (!empty($_SESSION['flash'])): $f = $_SESSION['flash']; unset($_SESSION['flash']); ?>

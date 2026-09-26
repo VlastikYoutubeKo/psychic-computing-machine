@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-09-26 -- Shared HLS unavailable slate and admin presentation
+
+- Added a lazy, shared FFmpeg slate with silent AAC, a rolling HLS window,
+  idle cleanup and a strict global `/_sv/slate/` route. Player-style revoked
+  entry requests receive an HLS master playlist; HTML requests keep 410,
+  and invalid private tokens remain 404. Added routing and FFmpeg tests.
+- Reserved `_sv` as a first public-path segment in the admin validator.
+  Redesigned the server-rendered admin shell, responsive layouts, forms,
+  tables, badges and login card without changing form names or auth logic.
+- Documented the 200-status monitoring tradeoff and the fact that the
+  optional temporary slate is not yet selected for upstream failures.
+
 ## 2026-09-26 -- Leak Checker timer installed (every 5 minutes)
 
 The Leak Checker had only ever run when started by hand, so "Scan now"

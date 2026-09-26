@@ -51,6 +51,7 @@ func main() {
 		log.Fatalf("creating gateway handler: %v", err)
 	}
 	defer h.Remux.Close()
+	defer h.Slate.Close()
 	srv := &http.Server{
 		Addr:              listen,
 		Handler:           h,

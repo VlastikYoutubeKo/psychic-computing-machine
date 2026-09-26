@@ -58,6 +58,7 @@ func newTestHandler(t *testing.T) (*Handler, *sql.DB) {
 		t.Fatalf("New: %v", err)
 	}
 	t.Cleanup(h.Remux.Close)
+	t.Cleanup(h.Slate.Close)
 	// Every httptest server in this file binds to 127.0.0.1, which real DNS
 	// resolution (h.Resolve's default) would correctly call private -- but
 	// that would make every test's "source" look like a trusted-private
@@ -188,8 +189,8 @@ func TestPrivateAccessTokenLifecycleOverHTTP(t *testing.T) {
 	if _, err := db.Exec(`UPDATE access_tokens SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')`); err != nil {
 		t.Fatalf("revoking: %v", err)
 	}
-	if c := code("/live/priv/raw-token-123.m3u8"); c != 410 {
-		t.Fatalf("revoked token: expected 410, got %d", c)
+	if c := code("/live/priv/raw-token-123.m3u8"); c != 200 {
+		t.Fatalf("revoked token player request: expected slate manifest 200, got %d", c)
 	}
 }
 

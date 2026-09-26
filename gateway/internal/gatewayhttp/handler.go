@@ -29,6 +29,7 @@ import (
 	"streamvault/gateway/internal/hls"
 	"streamvault/gateway/internal/remux"
 	"streamvault/gateway/internal/secretbox"
+	"streamvault/gateway/internal/slate"
 	"streamvault/gateway/internal/store"
 )
 
@@ -38,6 +39,7 @@ type Handler struct {
 	Codec     *blobcodec.Codec
 	Transport *http.Transport
 	Remux     *remux.Manager
+	Slate     slate.Provider
 
 	// Resolve backs checkFetchTarget's private/public IP classification.
 	// Defaults to real DNS (hostResolvesToPrivate); tests override it,
@@ -79,6 +81,7 @@ func New(st *store.Store, key []byte) (*Handler, error) {
 			IdleConnTimeout:       60 * time.Second,
 		},
 		Remux:            remux.NewManager(),
+		Slate:            slate.NewManager(),
 		Resolve:          hostResolvesToPrivate,
 		lastTouch:        make(map[int64]time.Time),
 		sourceTrustCache: make(map[int64]sourceTrustEntry),
@@ -115,6 +118,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	reqPath := strings.TrimPrefix(r.URL.Path, "/")
+	if reqPath == "_sv" || strings.HasPrefix(reqPath, "_sv/") {
+		h.serveSlate(w, r)
+		return
+	}
 
 	var prefix, remainder string
 	if idx := strings.Index(reqPath, "/r/"); idx >= 0 {
@@ -136,11 +143,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if ap.Stream.Status == "disabled" || ap.Status == "revoked" {
-		h.writeReplacement(w, ap.Stream)
-		return
-	}
-
 	if ap.Visibility == "private" {
 		info, err := h.Store.ValidateToken(ap.ID, tokenRaw)
 		if err != nil {
@@ -153,10 +155,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r) // never reveal whether the path itself is real
 			return
 		case store.TokenRevoked, store.TokenExpired:
-			h.writeReplacement(w, ap.Stream)
+			h.writeReplacement(w, r, ap.Stream, remainder == "")
 			return
 		}
 		h.touchTokenThrottled(info.ID)
+	}
+	if ap.Stream.Status == "disabled" || ap.Status == "revoked" {
+		h.writeReplacement(w, r, ap.Stream, remainder == "")
+		return
 	}
 
 	sourceEntry, err := url.Parse(ap.Stream.SourceURL)
@@ -561,7 +567,16 @@ var replacementReasons = map[string]string{
 	"stream_permanently_discontinued": "Stream permanently discontinued.",
 }
 
-func (h *Handler) writeReplacement(w http.ResponseWriter, s store.Stream) {
+func (h *Handler) writeReplacement(w http.ResponseWriter, r *http.Request, s store.Stream, entry bool) {
+	if entry && !strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/html") {
+		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusOK)
+		if r.Method != http.MethodHead {
+			_, _ = io.WriteString(w, "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-STREAM-INF:BANDWIDTH=180000,RESOLUTION=854x480\n/_sv/slate/unavailable/index.m3u8\n")
+		}
+		return
+	}
 	reason := replacementReasons[s.ReplacementReason]
 	if reason == "" {
 		reason = "Unauthorized public distribution."
@@ -572,6 +587,9 @@ func (h *Handler) writeReplacement(w http.ResponseWriter, s store.Stream) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusGone)
+	if r.Method == http.MethodHead {
+		return
+	}
 	fmt.Fprintf(w, `<!doctype html><html><head><meta charset="utf-8"><title>Stream unavailable</title>
 <style>body{font-family:system-ui,sans-serif;background:#0b0d12;color:#e6e8ee;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
 .card{max-width:32rem;padding:2rem;text-align:center}h1{font-size:1.5rem;margin-bottom:.5rem}p{color:#9aa2b1}</style>
@@ -580,4 +598,37 @@ func (h *Handler) writeReplacement(w http.ResponseWriter, s store.Stream) {
 <p><strong>Reason:</strong> %s</p>
 <p>The previous access URL has been permanently revoked.</p>
 </div></body></html>`, html.EscapeString(reason))
+}
+
+func (h *Handler) serveSlate(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/"), "/")
+	if len(parts) != 4 || parts[0] != "_sv" || parts[1] != "slate" ||
+		!slate.ValidVariant(parts[2]) || !slate.ValidName(parts[3]) {
+		http.NotFound(w, r)
+		return
+	}
+	p, err := h.Slate.GetPath(parts[2], parts[3])
+	if err != nil {
+		log.Printf("slate %s unavailable: %v", parts[2], err)
+		http.Error(w, "slate unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if parts[3] == "index.m3u8" {
+		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+	} else {
+		w.Header().Set("Content-Type", "video/mp2t")
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	http.ServeContent(w, r, parts[3], info.ModTime(), f)
 }

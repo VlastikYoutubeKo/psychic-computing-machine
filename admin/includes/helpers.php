@@ -20,7 +20,8 @@ function sv_flash(string $type, string $message): void
 /**
  * Validates a public_path: non-empty slash-separated segments of
  * [a-zA-Z0-9_-], no leading/trailing slash, no empty segments, and no
- * segment equal to the reserved "r" marker the gateway uses internally
+ * segment equal to the reserved "r" marker the gateway uses internally,
+ * and no leading "_sv" segment (the global slate route)
  * (see config.php SV_RESERVED_SEGMENT / ARCHITECTURE.md). Returns an error
  * string, or null if the path is valid.
  */
@@ -30,13 +31,16 @@ function sv_validate_public_path(string $path): ?string
         return 'Path must not be empty and must not start or end with a slash.';
     }
     $segments = explode('/', $path);
-    foreach ($segments as $seg) {
+    foreach ($segments as $index => $seg) {
         if ($seg === '' || !preg_match('/^[a-zA-Z0-9_-]+$/', $seg)) {
             return "Invalid path segment \"$seg\": only letters, digits, - and _ are allowed.";
         }
         if (strcasecmp($seg, SV_RESERVED_SEGMENT) === 0) {
             return 'The path segment "' . SV_RESERVED_SEGMENT . '" is reserved by the gateway and cannot be used.';
         }
+		if ($index === 0 && $seg === SV_RESERVED_ROOT_SEGMENT) {
+			return 'The path segment "' . SV_RESERVED_ROOT_SEGMENT . '" is reserved by the gateway and cannot be used.';
+		}
     }
     return null;
 }

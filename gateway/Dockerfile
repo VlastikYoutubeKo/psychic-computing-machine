@@ -16,7 +16,7 @@ FROM alpine:3.20
 # image builds and starts fine but silently fails only when a stream turns
 # out to be MPEG-TS -- caught by rebuilding and smoke-testing this image
 # specifically, not just running `go build` locally.
-RUN apk add --no-cache ffmpeg
+RUN apk add --no-cache ffmpeg font-dejavu
 COPY --from=build /out/streamvault-gateway /usr/local/bin/streamvault-gateway
 COPY --from=build /out/streamvault-leakchecker /usr/local/bin/streamvault-leakchecker
 # UID 33 matches www-data in the project's existing php-fpm image (Dockerfile.php,

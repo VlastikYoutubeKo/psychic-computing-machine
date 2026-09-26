@@ -15,6 +15,9 @@ define('SV_MIGRATIONS_DIR', SV_ROOT . '/migrations');
 // contain a segment equal to this, or it could collide with that routing
 // marker. Keep this in sync with gateway/internal/gatewayhttp/handler.go.
 define('SV_RESERVED_SEGMENT', 'r');
+// The gateway handles /_sv/... before access-point lookup. Reserve only
+// the first segment; nested "_sv" in a public path has no route conflict.
+define('SV_RESERVED_ROOT_SEGMENT', '_sv');
 
 session_name('streamvault_admin');
 if (session_status() === PHP_SESSION_NONE) {

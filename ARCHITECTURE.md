@@ -197,6 +197,32 @@ What's *not* possible, and the spec acknowledges this (section 10): a
 segment a client has already fully downloaded before revocation can't be
 un-downloaded. Verified in `tests/e2e_gateway.sh` step 9.
 
+## Shared unavailable slate
+
+Revoked or disabled access points and revoked or expired tokens still give
+HTML browsers a 410 page with the configured reason. A player request to an
+entry URL (no `Accept: text/html`) instead receives a small HLS master
+playlist with HTTP 200 that points to `/_sv/slate/unavailable/index.m3u8`.
+The global route is handled before access-point lookup and serves only
+`index.m3u8` or a numbered `segNNNNNN.ts` under an allowlisted variant. Invalid bearer
+tokens remain 404, even when their stream or access point is disabled.
+Previously issued protected segment links still require a valid token and
+do not become public slate links.
+
+`internal/slate` owns one lazy FFmpeg process per variant, independent of
+the MPEG-TS remux manager's two session slots. One 854×480 still-image
+video at 5 fps and silent AAC audio feed a six-segment rolling HLS window.
+The process is shared across viewers and stopped after 90 seconds without
+playlist or segment requests. Shutdown cancels the process and removes its
+temporary directory. The same fixed message is used for every stream and
+viewer; stream-specific reasons remain on the HTML page only. The gateway
+currently selects only the `unavailable` variant; a second temporary
+variant is available for future upstream-failure routing.
+
+This is intentionally a public error stream. A monitor that infers
+revocation from HTTP 410 on player-like entry requests will now see 200
+and must inspect the returned playlist or use an HTML Accept header.
+
 ## MPEG-TS entry sources
 
 The existing public entry route probes the source body. If it is HLS, the

@@ -16,7 +16,7 @@ $pageTitle = 'Dashboard';
 $activeNav = 'dashboard';
 require __DIR__ . '/includes/layout_top.php';
 ?>
-<h1>Dashboard</h1>
+<div class="sv-page-heading"><div><h1>Dashboard</h1><p class="sv-help">Your streams and leak response at a glance.</p></div><a href="stream_form.php" class="btn btn-primary">+ Add stream</a></div>
 
 <div class="sv-grid">
   <div class="sv-stat"><div class="num"><?= $streamCount ?></div><div class="label">Total streams</div></div>

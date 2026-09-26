@@ -119,8 +119,9 @@ curl -s -c "$COOKIES" -b "$COOKIES" -o /dev/null \
   --data-urlencode "csrf=$CSRF" --data-urlencode "action=revoke_token" \
   --data-urlencode "token_id=$TOKEN_ID" --data-urlencode "reason=manual" \
   "http://127.0.0.1:$ADMIN_PORT/stream_view.php?id=$STREAM_ID"
-CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$GATEWAY_PORT/live/e2eadmin-priv/$RAW_TOKEN.m3u8")
-check "gateway rejects admin-revoked token" "410" "$CODE"
+CODE=$(curl -s -o "$WORK/revoked.m3u8" -w "%{http_code}" "http://127.0.0.1:$GATEWAY_PORT/live/e2eadmin-priv/$RAW_TOKEN.m3u8")
+check "gateway switches admin-revoked token to slate" "200" "$CODE"
+grep -q '/_sv/slate/unavailable/index.m3u8' "$WORK/revoked.m3u8" || { echo "FAIL: revoked URL did not point to slate"; FAIL=1; }
 
 echo
 if [ "$FAIL" -eq 0 ]; then
