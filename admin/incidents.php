@@ -170,13 +170,11 @@ $streams = $db->query('SELECT id, name FROM streams ORDER BY name COLLATE NOCASE
 $incidents = $db->query('SELECT i.*, s.name AS stream_name, r.comment_url AS reply_url FROM incidents i LEFT JOIN streams s ON s.id = i.stream_id LEFT JOIN leak_replies r ON r.source_url = i.source_url ORDER BY i.detected_at DESC, i.id DESC')->fetchAll();
 $replyBase = (string) ($db->query("SELECT value FROM settings WHERE key = 'gateway_base_url'")->fetchColumn() ?: '');
 
-$pageTitle = 'Incidents';
+$pageTitle = 'Leaks';
 $activeNav = 'incidents';
 require __DIR__ . '/includes/layout_top.php';
 ?>
-<h1>Incidents</h1>
-
-<?php sv_render_leak_status($db); ?>
+<div class="sv-page-heading"><div><h1>Leaks</h1><p class="sv-help">Incidents, scan coverage, watched sources and automatic replies.</p></div><a class="btn" href="#checker">Checker controls</a></div>
 <div class="sv-panel">You can record and triage incidents manually here. Confirming an incident will
   revoke the leaked link (the identified token, or the access point that was found). Links the Leak Checker
   finds on GitHub are revoked automatically, and a notice is posted on issues in allowlisted repositories.</div>
@@ -211,7 +209,7 @@ require __DIR__ . '/includes/layout_top.php';
     <table>
       <tr><th>ID</th><th>Stream</th><th>Source</th><th>Status</th><th>Detected</th><th>Evidence / notes</th><th>Actions</th></tr>
       <?php foreach ($incidents as $i): ?>
-        <tr>
+        <tr id="incident-<?= (int) $i['id'] ?>">
           <td>#<?= (int) $i['id'] ?></td>
           <td><?= h($i['stream_name'] ?? 'Deleted stream') ?></td>
           <td class="mono"><?= h($i['source']) ?></td>
@@ -250,4 +248,5 @@ require __DIR__ . '/includes/layout_top.php';
   <?php endif; ?>
 </div>
 
+<?php require __DIR__ . '/includes/leak_panels.php'; ?>
 <?php require __DIR__ . '/includes/layout_bottom.php'; ?>

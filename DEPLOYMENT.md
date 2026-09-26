@@ -337,11 +337,29 @@ The local admin/.user.ini requests upload_max_filesize=26M and
 post_max_size=27M so the app's 25 MiB cap is reachable. Confirm PHP-FPM
 honors per-directory .user.ini files in production; otherwise configure
 these two limits in the PHP pool. Existing sessions adopt changed audio
-settings after they become idle and restart.
+settings on the 30-second maintenance tick; the next playlist request starts
+a fresh session.
 
 Regenerate artwork in development with `sh tools/render-slate.sh`, review
 both MP4s, then commit them. The renderer needs zenika/alpine-chrome:latest,
 local Node ws, and FFmpeg. Production needs none of those renderer tools.
+
+## Admin v3 deployment notes
+
+Apply additive migration 0006 using the usual PHP admin migration runner
+before starting the updated gateway. The new admin reads `slate_texts` on
+Error screen; the gateway also reads it, with built-in defaults if a row is
+missing. Deploy admin and gateway together so the reason-specific slate
+routes and the new title-free MP4 loops match. The gateway image includes
+DejaVu regular/bold TTF files under `/usr/local/share/streamvault/fonts`.
+Do not install a browser on the runtime host; rerender the committed MP4s in
+development with `sh tools/render-slate.sh` when changing the artwork.
+
+Set the OpenRouter key after deployment in Settings. The key is write-only
+and is never needed during build or tests. `STREAMVAULT_OPENROUTER_URL` is a
+test-only endpoint override; leave it unset in production. OpenRouter calls
+use the model configured in Settings (default `z-ai/glm-5.3-flash`). Review
+publicly broadcast music rights before enabling slate audio.
 
 ## Backup / restore
 

@@ -13,6 +13,9 @@ if (!$stream) {
     sv_flash('err', 'Stream not found.');
     sv_redirect('streams.php');
 }
+$streamIncidentsStmt = $db->prepare("SELECT id, source, status, detected_at FROM incidents WHERE stream_id = ? ORDER BY detected_at DESC LIMIT 20");
+$streamIncidentsStmt->execute([$id]);
+$streamIncidents = $streamIncidentsStmt->fetchAll();
 
 $revealToken = null; // ['raw' => ..., 'access_point_id' => ..., 'label' => ...] shown exactly once
 
@@ -127,6 +130,7 @@ require __DIR__ . '/includes/layout_top.php';
   <span class="badge <?= h($stream['status']) ?>"><?= h($stream['status']) ?></span>
   <a href="stream_form.php?id=<?= $id ?>" class="btn btn-sm" style="float:right;">Edit</a>
 </h1>
+<nav class="sv-section-nav" aria-label="Stream sections"><a href="#overview">Overview</a><a href="#access-points">Access points &amp; tokens</a><a href="stream_form.php?id=<?= $id ?>">Edit settings</a><a href="#stream-incidents">Incidents</a></nav>
 
 <?php if (!$baseUrl): ?>
   <div class="sv-flash err">
@@ -135,7 +139,7 @@ require __DIR__ . '/includes/layout_top.php';
   </div>
 <?php endif; ?>
 
-<div class="sv-panel">
+<div class="sv-panel" id="overview"><h2>Overview</h2>
   <p><?= h($stream['description']) ?: '<span class="sv-help">No description.</span>' ?></p>
   <table>
     <tr><th>Source type</th><td class="mono"><?= h($stream['source_type']) ?></td></tr>
@@ -155,7 +159,7 @@ require __DIR__ . '/includes/layout_top.php';
   </form>
 </div>
 
-<h2>Access points</h2>
+<h2 id="access-points">Access points &amp; tokens</h2>
 
 <?php foreach ($accessPoints as $ap): $fullPath = $ap['public_path']; ?>
   <div class="sv-panel">
@@ -253,4 +257,10 @@ require __DIR__ . '/includes/layout_top.php';
   </form>
 </div>
 
+<section class="sv-panel" id="stream-incidents"><h2>Incidents for this stream</h2>
+  <?php if (!$streamIncidents): ?><p class="sv-help">No incidents recorded for this stream.</p><?php else: ?>
+  <table><tr><th>Detected</th><th>Source</th><th>Status</th><th></th></tr>
+    <?php foreach ($streamIncidents as $incident): ?><tr><td class="mono"><?= h($incident['detected_at']) ?></td><td><?= h($incident['source']) ?></td><td><span class="badge <?= h($incident['status']) ?>"><?= h($incident['status']) ?></span></td><td><a href="incidents.php#incident-<?= (int) $incident['id'] ?>">Open in Leaks</a></td></tr><?php endforeach; ?>
+  </table><?php endif; ?>
+</section>
 <?php require __DIR__ . '/includes/layout_bottom.php'; ?>

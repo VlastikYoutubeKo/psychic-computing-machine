@@ -118,7 +118,7 @@ echo "== 9. Revoking the token must switch the player entry to slate and block o
 sqlite3 "$DB" "UPDATE access_tokens SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = (SELECT id FROM access_tokens WHERE access_point_id=$AP_ID);"
 CODE=$(curl -s -o "$WORK/revoked.m3u8" -w "%{http_code}" "http://127.0.0.1:$GATEWAY_PORT/live/e2e/$RAW_TOKEN.m3u8")
 check "revoked player entry status" "200" "$CODE"
-grep -Eq '/_sv/slate/unavailable/([0-9a-f]{40}/)?index.m3u8' "$WORK/revoked.m3u8" || { echo "FAIL: revoked entry did not point to slate"; FAIL=1; }
+grep -Eq '/_sv/slate/unavailable/unauthorized_redistribution/([0-9a-f]{40}/)?index.m3u8' "$WORK/revoked.m3u8" || { echo "FAIL: revoked entry did not point to slate"; FAIL=1; }
 CODE=$(curl -s -H 'Accept: text/html' -o /dev/null -w "%{http_code}" "http://127.0.0.1:$GATEWAY_PORT/live/e2e/$RAW_TOKEN.m3u8")
 check "revoked browser entry status" "410" "$CODE"
 CODE=$(curl -s -o /dev/null -w "%{http_code}" "$SEG_URL")

@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-09-27 -- Admin v3 and editable slate text
+
+- Reorganized the admin around Dashboard, Streams, Leaks, Error screen and
+  system Settings. Existing actions and CSRF handling remain; login markup
+  and password-manager flow are untouched.
+- Added migration 0006 for per-reason slate text and operator AI generation
+  quota. Browser error pages and player slates use the same edited text.
+- Re-rendered both slate loops without title/subtitle. A shared committed
+  DejaVu font is used in the renderer and the runtime; FFmpeg reads text from
+  0600 files and enforces a six-process total cap. Text and audio edits
+  refresh running slates on the 30-second maintenance tick.
+- Added encrypted write-only OpenRouter key, editable model and a local-mock
+  tested suggestion flow. Suggestions fill the form and require a separate
+  Save. Quotas are ten attempts/minute and 100/day per operator.
+
 ## 2026-09-26 -- Slate in 1080p with larger text; Opus/FLAC audio
 
 - Slate loops are now rendered at 1920x1080 (same 854x480 CSS layout at

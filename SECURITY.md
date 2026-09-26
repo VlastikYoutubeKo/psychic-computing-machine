@@ -92,6 +92,25 @@ protocol whitelist. FFmpeg resolves the hostname again when opening it,
 leaving DNS rebinding as a residual risk for operator-entered URLs. Public
 broadcast music requires appropriate rights.
 
+## Admin v3: editable error text and AI suggestions
+
+Migration 0006 stores public slate text, plus an operator-scoped generation
+quota log. The OpenRouter API key is AES-256-GCM encrypted with the existing
+key file, write-only in the admin and absent from audit records. The server
+calls OpenRouter over HTTPS with a 20-second timeout and a 16 KiB response
+limit. API failures shown to operators contain status codes only; response
+bodies, credentials and cURL diagnostics are never logged or displayed.
+Generation is charged before sending to enforce ten/minute and 100/day even
+for concurrent clicks. Suggestions are validated and never auto-saved.
+
+Text is written to 0600 files, rather than interpolated into FFmpeg filter
+arguments. The gateway strips control characters and enforces length limits
+again when reading the database. Every reason-specific route is an allowlisted
+reason and opaque personal HMAC keys remain bound to the reason. At the hard
+cap of six FFmpeg sessions, viewers share an existing generic slate; this may
+show a different reason until capacity becomes free. Player requests still
+return HTTP 200 for revoked URLs, while invalid tokens stay 404.
+
 ## Deferred hardening (known gaps, not yet addressed)
 
 - **Login rate limiting / lockout**: production deployment should add a

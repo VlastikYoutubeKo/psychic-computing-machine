@@ -20,6 +20,7 @@ RUN apk add --no-cache ffmpeg font-dejavu tzdata
 COPY --from=build /out/streamvault-gateway /usr/local/bin/streamvault-gateway
 COPY --from=build /out/streamvault-leakchecker /usr/local/bin/streamvault-leakchecker
 COPY assets/slate/unavailable.mp4 assets/slate/temporarily-unavailable.mp4 /usr/local/share/streamvault/slate/
+COPY assets/fonts/DejaVuSans.ttf assets/fonts/DejaVuSans-Bold.ttf /usr/local/share/streamvault/fonts/
 # UID 33 matches www-data in the project's existing php-fpm image (Dockerfile.php,
 # based on the official Debian php:8.2-fpm), which also reads/writes the shared
 # SQLite file under ./streamvault/data on the host. Running as the same UID here

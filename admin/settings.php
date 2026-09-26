@@ -3,7 +3,6 @@ declare(strict_types=1);
 require_once __DIR__ . '/includes/auth.php';
 require_once __DIR__ . '/includes/csrf.php';
 require_once __DIR__ . '/includes/secret_box.php';
-require_once __DIR__ . '/includes/leak_status.php';
 $operator = sv_require_login();
 $db = sv_db();
 
@@ -126,6 +125,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $db->prepare("DELETE FROM settings WHERE key = 'github_token_enc'")->execute();
         sv_audit('github_token_cleared');
         sv_flash('ok', 'GitHub token removed.');
+    } elseif ($action === 'save_openrouter_key') {
+        $token = trim((string) ($_POST['openrouter_key'] ?? ''));
+        if ($token === '' || strlen($token) > 512) {
+            sv_flash('err', 'Enter an OpenRouter key up to 512 bytes.');
+        } else {
+            sv_put_setting($db, 'openrouter_key_enc', sv_encrypt(sv_ensure_key_file(SV_KEY_FILE), $token));
+            sv_audit('openrouter_key_updated');
+            sv_flash('ok', 'OpenRouter key saved encrypted. It will not be shown again.');
+        }
+    } elseif ($action === 'clear_openrouter_key') {
+        $db->prepare("DELETE FROM settings WHERE key = 'openrouter_key_enc'")->execute();
+        sv_audit('openrouter_key_cleared');
+        sv_flash('ok', 'OpenRouter key removed.');
+    } elseif ($action === 'save_openrouter_model') {
+        $model = trim((string) ($_POST['openrouter_model'] ?? ''));
+        if (!preg_match('/^[a-zA-Z0-9][a-zA-Z0-9._:\/-]{0,119}$/D', $model)) {
+            sv_flash('err', 'Enter a valid model ID up to 120 characters.');
+        } else {
+            sv_put_setting($db, 'openrouter_model', $model);
+            sv_audit('openrouter_model_updated');
+            sv_flash('ok', 'OpenRouter model saved.');
+        }
+    } elseif ($action === 'change_password') {
+        $current = (string) ($_POST['current_password'] ?? '');
+        $new = (string) ($_POST['new_password'] ?? '');
+        $again = (string) ($_POST['new_password_confirm'] ?? '');
+        $stmt = $db->prepare('SELECT password_hash FROM operators WHERE id = ?');
+        $stmt->execute([$operator['id']]);
+        $oldHash = $stmt->fetchColumn();
+        if (!$oldHash || !password_verify($current, $oldHash) || strlen($new) < 12 || strlen($new) > 1024 || $new !== $again) {
+            sv_flash('err', 'Check your current password and enter a matching new password of at least 12 characters.');
+        } else {
+            $db->prepare('UPDATE operators SET password_hash = ? WHERE id = ?')->execute([password_hash($new, PASSWORD_DEFAULT), $operator['id']]);
+            session_regenerate_id(true);
+            sv_audit('operator_password_changed');
+            sv_flash('ok', 'Password changed.');
+        }
     } elseif ($action === 'save_reply_allowlist') {
         $entries = preg_split('/[\s,]+/', strtolower(trim((string) ($_POST['reply_allowlist'] ?? ''))), -1, PREG_SPLIT_NO_EMPTY);
         $bad = array_filter($entries, fn ($e) => !preg_match('/^[a-z0-9-]+\/[a-z0-9_.-]+$/D', $e) || str_contains($e, '..'));
@@ -186,39 +222,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } else {
         sv_flash('err', 'Unknown settings action.');
     }
-    sv_redirect('settings.php');
+    $leakActions = ['request_leak_scan','add_leak_source','toggle_leak_source','delete_leak_source','save_reply_allowlist'];
+    sv_redirect(in_array($action, $leakActions, true) ? 'incidents.php' : (in_array($action, ['save_slate_audio','disable_slate_audio'], true) ? 'error_screen.php' : 'settings.php'));
 }
 
 $baseUrl = $db->query("SELECT value FROM settings WHERE key = 'gateway_base_url'")->fetchColumn() ?: '';
 $githubTokenSet = (bool) $db->query("SELECT 1 FROM settings WHERE key = 'github_token_enc'")->fetchColumn();
-$replyAllowlist = (string) ($db->query("SELECT value FROM settings WHERE key = 'github_reply_allowlist'")->fetchColumn() ?: '');
-$slateAudio = $db->query("SELECT key, value FROM settings WHERE key IN ('slate_audio_file','slate_audio_url','slate_audio_volume')")->fetchAll(PDO::FETCH_KEY_PAIR);
-$sources = $db->query('SELECT id, provider, identifier, enabled, last_scanned_at FROM leak_sources ORDER BY provider, identifier')->fetchAll();
+$openRouterSet = (bool) $db->query("SELECT 1 FROM settings WHERE key = 'openrouter_key_enc'")->fetchColumn();
+$openRouterModel = $db->query("SELECT value FROM settings WHERE key = 'openrouter_model'")->fetchColumn() ?: 'z-ai/glm-5.3-flash';
 
 $pageTitle = 'Settings';
 $activeNav = 'settings';
 require __DIR__ . '/includes/layout_top.php';
 ?>
-<h1>Settings</h1>
-
-<div class="sv-panel">
-  <h2>Slate audio</h2>
-  <p class="sv-help">Current source: <?= isset($slateAudio['slate_audio_file']) ? 'uploaded file' : (isset($slateAudio['slate_audio_url']) ? 'radio URL' : 'silence') ?>. Changes apply when a new slate session starts. Public broadcasts require music rights.</p>
-  <form method="post" enctype="multipart/form-data">
-    <?= sv_csrf_field() ?><input type="hidden" name="action" value="save_slate_audio">
-    <label for="slate-file">Upload audio (MP3, OGG, OPUS, FLAC, AAC, M4A, WAV; max 25 MB)</label>
-    <input id="slate-file" type="file" name="slate_audio_file" accept=".mp3,.ogg,.opus,.flac,.aac,.m4a,.wav,audio/*">
-    <label for="slate-url">Or radio stream URL</label>
-    <input id="slate-url" type="url" name="slate_audio_url" maxlength="2048" value="<?= h($slateAudio['slate_audio_url'] ?? '') ?>" placeholder="https://example.org/radio.mp3">
-    <label for="slate-volume">Volume (0–100)</label>
-    <input id="slate-volume" type="number" name="slate_audio_volume" min="0" max="100" value="<?= h($slateAudio['slate_audio_volume'] ?? '50') ?>" required>
-    <button type="submit" class="btn-primary" style="margin-top:1rem">Save audio</button>
-  </form>
-  <form method="post" data-confirm="Disable slate audio?" style="margin-top:1rem">
-    <?= sv_csrf_field() ?><input type="hidden" name="action" value="disable_slate_audio">
-    <button type="submit" class="btn-danger">Disable and remove audio</button>
-  </form>
-</div>
+<div class="sv-page-heading"><div><h1>System settings</h1><p class="sv-help">Public URL, service credentials and your account.</p></div></div>
 
 <div class="sv-panel">
   <h2 style="margin-top:0;">Display</h2>
@@ -232,18 +249,6 @@ require __DIR__ . '/includes/layout_top.php';
   </form>
 </div>
 
-<?php sv_render_leak_status($db); ?>
-
-<div class="sv-panel">
-  <h2 style="margin-top:0;">Request a scan</h2>
-  <p class="sv-help">The checker is a separate one-shot process. This queues a request for its once-per-minute timer; it does not run a command inside the web container. Check the run status above to see when it actually starts and whether it succeeds.</p>
-  <form method="post">
-    <?= sv_csrf_field() ?>
-    <input type="hidden" name="action" value="request_leak_scan">
-    <button type="submit" class="btn-primary" <?= $githubTokenSet && $baseUrl !== '' ? '' : 'disabled' ?>>Scan now</button>
-  </form>
-</div>
-
 <div class="sv-panel">
   <h2 style="margin-top:0;">GitHub access</h2>
   <p>Token: <strong><?= $githubTokenSet ? 'configured' : 'not configured' ?></strong>. It is encrypted at rest using the StreamVault key and never shown here after saving.</p>
@@ -254,7 +259,7 @@ require __DIR__ . '/includes/layout_top.php';
     <input type="password" name="github_token" autocomplete="new-password" required>
     <button type="submit" class="btn-primary" style="margin-top:1rem;">Save token</button>
   </form>
-  <?php if ($githubTokenSet): ?>
+<?php if ($githubTokenSet): ?>
     <form method="post" data-confirm="Remove the stored GitHub token? Scheduled scans will fail until another is configured.">
       <?= sv_csrf_field() ?>
       <input type="hidden" name="action" value="clear_github_token">
@@ -264,66 +269,28 @@ require __DIR__ . '/includes/layout_top.php';
 </div>
 
 <div class="sv-panel">
-  <h2 style="margin-top:0;">Automatic GitHub replies</h2>
-  <p class="sv-help">When a stream is set to "Revoke automatically on confirmed leak", the checker revokes the leaked link and, only for issues/PRs in these repositories, posts a public comment with the "Stream unavailable" image. Everywhere else, reply from the incident page after reviewing. The GitHub token needs the <code>public_repo</code> scope (classic token) to comment.</p>
-  <form method="post">
-    <?= sv_csrf_field() ?>
-    <input type="hidden" name="action" value="save_reply_allowlist">
-    <label for="reply_allowlist">Repositories (owner/repo, one per line)</label>
-    <textarea id="reply_allowlist" name="reply_allowlist" rows="3" placeholder="owner/repo"><?= h($replyAllowlist) ?></textarea>
-    <button type="submit" class="btn btn-primary">Save allowlist</button>
+  <h2>OpenRouter</h2>
+  <p class="sv-help">API key: <strong><?= $openRouterSet ? 'configured' : 'not configured' ?></strong>. The encrypted key is never displayed after saving. Set a spending limit in OpenRouter too.</p>
+  <form method="post"><?= sv_csrf_field() ?><input type="hidden" name="action" value="save_openrouter_key">
+    <label for="openrouter-key">API key</label><input id="openrouter-key" type="password" name="openrouter_key" autocomplete="new-password" required>
+    <button class="btn-primary" type="submit">Save key</button>
+  </form>
+  <?php if ($openRouterSet): ?><form method="post" data-confirm="Remove the OpenRouter key? AI generation will stop.">
+    <?= sv_csrf_field() ?><input type="hidden" name="action" value="clear_openrouter_key"><button class="btn-danger" type="submit">Remove key</button>
+  </form><?php endif; ?>
+  <form method="post"><?= sv_csrf_field() ?><input type="hidden" name="action" value="save_openrouter_model">
+    <label for="openrouter-model">Model ID</label><input id="openrouter-model" name="openrouter_model" maxlength="120" value="<?= h($openRouterModel) ?>" required>
+    <button class="btn-primary" type="submit">Save model</button>
   </form>
 </div>
 
-<div class="sv-panel">
-  <h2 style="margin-top:0;">Configured GitHub sources</h2>
-  <p class="sv-help">Enabled repositories and organizations receive additional scoped queries during a scan. The “Last attempted” column records when the checker tried each source; check the run status above for errors or partial coverage. Global GitHub search does not need a row. GitLab and public playlist scanning are not implemented yet.</p>
-  <form method="post">
-    <?= sv_csrf_field() ?>
-    <input type="hidden" name="action" value="add_leak_source">
-    <label>Type</label>
-    <select name="provider"><option value="github_repo">GitHub repository</option><option value="github_org">GitHub organization</option></select>
-    <label>Owner/repository or organization</label>
-    <input type="text" name="identifier" maxlength="200" placeholder="iptv-org/iptv" required>
-    <button type="submit" class="btn-primary" style="margin-top:1rem;">Add source</button>
+<div class="sv-panel"><h2>Change your password</h2>
+  <form method="post"><?= sv_csrf_field() ?><input type="hidden" name="action" value="change_password">
+    <label for="current-password">Current password</label><input id="current-password" type="password" name="current_password" autocomplete="current-password" required>
+    <label for="new-password">New password</label><input id="new-password" type="password" name="new_password" autocomplete="new-password" minlength="12" required>
+    <label for="new-password-confirm">Confirm new password</label><input id="new-password-confirm" type="password" name="new_password_confirm" autocomplete="new-password" minlength="12" required>
+    <button class="btn-primary" type="submit">Change password</button>
   </form>
-  <?php if ($sources): ?>
-    <table style="margin-top:1rem;">
-      <tr><th>Provider</th><th>Identifier</th><th>Enabled</th><th>Last attempted</th><th>Actions</th></tr>
-      <?php foreach ($sources as $source): ?>
-        <tr>
-          <td><?= h($source['provider']) ?></td>
-          <td class="mono"><?= h($source['identifier']) ?></td>
-          <td><?= $source['enabled'] ? 'yes' : 'no' ?></td>
-          <td class="mono"><?= h($source['last_scanned_at'] ?? 'never') ?></td>
-          <td>
-            <?php if (in_array($source['provider'], ['github_repo', 'github_org'], true)): ?>
-              <form method="post" style="display:inline;">
-                <?= sv_csrf_field() ?><input type="hidden" name="action" value="toggle_leak_source"><input type="hidden" name="source_id" value="<?= (int) $source['id'] ?>">
-                <button type="submit" class="btn-sm"><?= $source['enabled'] ? 'Disable' : 'Enable' ?></button>
-              </form>
-              <form method="post" style="display:inline;" data-confirm="Delete this watched source?">
-                <?= sv_csrf_field() ?><input type="hidden" name="action" value="delete_leak_source"><input type="hidden" name="source_id" value="<?= (int) $source['id'] ?>">
-                <button type="submit" class="btn-sm btn-danger">Delete</button>
-              </form>
-            <?php else: ?>
-              <span class="sv-help">Not managed here yet</span>
-            <?php endif; ?>
-          </td>
-        </tr>
-      <?php endforeach; ?>
-    </table>
-  <?php endif; ?>
-</div>
-
-<div class="sv-panel">
-  <h2 style="margin-top:0;">Not yet implemented</h2>
-  <ul class="sv-help">
-    <li>GitLab and public playlist monitoring</li>
-    <li>Discord bot configuration</li>
-    <li>Automatic or approval-gated token rotation</li>
-    <li>Replacement HLS video, M3U export and EPG import</li>
-  </ul>
 </div>
 
 <?php require __DIR__ . '/includes/layout_bottom.php'; ?>

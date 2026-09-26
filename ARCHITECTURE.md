@@ -398,7 +398,7 @@ correctly the first time:
   than 15 minutes is assumed to belong to a crashed process and is
   stolen rather than blocking forever.
 
-**Explicitly watched sources** (`leak_sources`, managed from Settings):
+**Explicitly watched sources** (`leak_sources`, managed from Leaks):
 global GitHub code/issue search already covers all of public GitHub, so
 these exist for spec section 12's "Umožni přidat konkrétní repozitáře,
 organizace" -- e.g. giving `iptv-org/iptv` (which the spec calls out by
@@ -459,12 +459,47 @@ comes from one uploaded file or one HTTP(S) radio URL per session (up to five
 pulls if both generic variants and all personal slots are active). URL input
 forbids redirects and private/reserved addresses. A failed radio session
 restarts promptly with silence and suppresses radio retries for five minutes.
-Other short-lived encoder failures back off for 10 seconds. Changes apply to new
-sessions. Public broadcasts of music require rights.
+Other short-lived encoder failures back off for 10 seconds. Audio changes
+restart affected sessions on the 30-second maintenance tick. Public broadcasts
+of music require rights.
 
 Player entry requests for revoked/disabled/expired access receive HTTP 200,
 so status-code-only monitoring cannot distinguish them from live streams.
 Invalid private tokens remain 404; HTML requests retain 410.
+
+## Admin v3 and reason-specific slate copy
+
+The admin navigation follows tasks: Dashboard, Streams, Leaks, Error screen,
+Settings. Stream details keep overview, access points/tokens, editing and
+related incidents together. Leak scan requests, watched sources and GitHub
+reply allowlist are on Leaks; slate audio and text are on Error screen;
+Settings holds only system URL, service credentials and operator password.
+Existing POST actions retain their field names and CSRF checks.
+
+Migration 0006 adds `slate_texts` (one row for each replacement reason and the
+temporary source-failure variant) and `ai_generation_log`. The browser 410
+page and the in-stream slate read the same copy. Titles are at most 32 Unicode
+characters, subtitles at most 90, with at most two display lines. Control
+characters are stripped. The Chromium-rendered MP4 now contains the card,
+icon, eyebrow and motion only; FFmpeg draws text, clock and cut-off time from
+files. DejaVu Sans regular/bold are committed in `gateway/assets/fonts` for
+both render and runtime; `LICENSE.debian-copyright` carries their license.
+
+Generic sessions are keyed by variant and reason; personal sessions include
+the reason in their process-local HMAC route key. Total live FFmpeg processes
+are capped at six. At the cap, a request reuses an already running generic
+slate, preferring the same variant. Audio and text changes stop affected
+sessions on the 30-second maintenance tick; the next playlist request starts
+them with current settings. Existing HLS segments may remain in a player's
+buffer briefly after an edit.
+
+OpenRouter generation is operator-initiated and server-side. The encrypted
+write-only key and editable model live in Settings. A successful completion
+fills one Error screen form but does not save it. Each operator is limited to
+ten attempts per minute and 100 per UTC day, charged before the API request.
+Tests point the endpoint at a local mock via `STREAMVAULT_OPENROUTER_URL`;
+production uses the OpenRouter chat completions endpoint. No browser
+contacts OpenRouter directly.
 
 ## What was deliberately deferred
 

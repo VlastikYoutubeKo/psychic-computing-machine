@@ -92,6 +92,10 @@ func New(st *store.Store, key []byte) (*Handler, error) {
 		file, streamURL, volume, err := st.SlateAudioSettings()
 		return slate.AudioSettings{File: file, URL: streamURL, Volume: volume}, err
 	}, st.DataDir())
+	h.Slate.(*slate.Manager).ConfigureText(func(reason string) (slate.Text, error) {
+		title, subtitle, err := st.SlateText(reason)
+		return slate.Text{Title: title, Subtitle: subtitle}, err
+	})
 	return h, nil
 }
 
@@ -313,7 +317,7 @@ func (h *Handler) serveEntry(w http.ResponseWriter, r *http.Request, ap *store.A
 			writeSlatePlaylist(w, r, slate.Temporary)
 			return
 		}
-		http.Error(w, "upstream unavailable", http.StatusBadGateway)
+		h.writeTemporaryHTML(w, r)
 		return
 	}
 	if resp.StatusCode >= 400 {
@@ -322,7 +326,7 @@ func (h *Handler) serveEntry(w http.ResponseWriter, r *http.Request, ap *store.A
 			writeSlatePlaylist(w, r, slate.Temporary)
 			return
 		}
-		http.Error(w, "upstream error", http.StatusBadGateway)
+		h.writeTemporaryHTML(w, r)
 		return
 	}
 	if !h.sniffAndServe(w, resp, resp.Request.URL, prefix, ap, true) {
@@ -338,7 +342,7 @@ func (h *Handler) serveResource(w http.ResponseWriter, r *http.Request, ap *stor
 	resp, err := h.fetch(r.Context(), target, ap.Stream, sourcePrivate, 20*time.Second)
 	if err != nil {
 		log.Printf("fetching resource for stream %d failed", ap.Stream.ID)
-		http.Error(w, "upstream unavailable", http.StatusBadGateway)
+		h.writeTemporaryHTML(w, r)
 		return
 	}
 	defer resp.Body.Close()
@@ -580,16 +584,25 @@ func stripKnownExt(p string) string {
 	return p
 }
 
-var replacementReasons = map[string]string{
-	"limited_bandwidth":               "Limited bandwidth.",
-	"not_intended_for_public":         "This stream was not intended for public distribution.",
-	"unauthorized_redistribution":     "Unauthorized public distribution.",
-	"access_revoked_by_owner":         "Access revoked by the stream owner.",
-	"stream_permanently_discontinued": "Stream permanently discontinued.",
+func (h *Handler) replacementText(reason string) slate.Text {
+	if !slate.ValidReason(reason) || reason == slate.TemporaryReason {
+		reason = "unauthorized_redistribution"
+	}
+	t := slate.DefaultText(reason)
+	if title, subtitle, err := h.Store.SlateText(reason); err == nil {
+		if clean, err := slate.NormalizeText(slate.Text{Title: title, Subtitle: subtitle}); err == nil {
+			t = clean
+		}
+	}
+	return t
 }
 
 func (h *Handler) writeReplacement(w http.ResponseWriter, r *http.Request, ap *store.AccessPoint, token store.TokenInfo, entry bool) {
 	s := ap.Stream
+	reason := s.ReplacementReason
+	if !slate.ValidReason(reason) || reason == slate.TemporaryReason {
+		reason = "unauthorized_redistribution"
+	}
 	if entry && wantsSlate(r) {
 		var stamp string
 		switch {
@@ -604,32 +617,37 @@ func (h *Handler) writeReplacement(w http.ResponseWriter, r *http.Request, ap *s
 		}
 		key := ""
 		if cutoff, err := time.Parse(time.RFC3339Nano, stamp); err == nil {
-			key = h.Slate.Prepare(slate.Unavailable, ap.ID, token.ID, cutoff)
+			key = h.Slate.Prepare(slate.Unavailable+":"+reason, ap.ID, token.ID, cutoff)
 		}
-		writeSlatePlaylistKey(w, r, slate.Unavailable, key)
+		writeSlatePlaylistKey(w, r, slate.Unavailable+":"+reason, key)
 		return
 	}
-	reason := replacementReasons[s.ReplacementReason]
-	if reason == "" {
-		reason = "Unauthorized public distribution."
+	copy := h.replacementText(reason)
+	h.writeErrorHTML(w, r, copy, http.StatusGone)
+}
+
+func (h *Handler) writeTemporaryHTML(w http.ResponseWriter, r *http.Request) {
+	copy := slate.DefaultText(slate.TemporaryReason)
+	if title, subtitle, err := h.Store.SlateText(slate.TemporaryReason); err == nil {
+		if clean, err := slate.NormalizeText(slate.Text{Title: title, Subtitle: subtitle}); err == nil {
+			copy = clean
+		}
 	}
-	if s.ReplacementMessage.Valid && s.ReplacementMessage.String != "" {
-		reason = s.ReplacementMessage.String
-	}
+	h.writeErrorHTML(w, r, copy, http.StatusBadGateway)
+}
+func (h *Handler) writeErrorHTML(w http.ResponseWriter, r *http.Request, copy slate.Text, status int) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(http.StatusGone)
+	w.WriteHeader(status)
 	if r.Method == http.MethodHead {
 		return
 	}
-	fmt.Fprintf(w, `<!doctype html><html><head><meta charset="utf-8"><title>Stream unavailable</title>
+	fmt.Fprintf(w, `<!doctype html><html><head><meta charset="utf-8"><title>%s</title>
 <style>body{font-family:system-ui,sans-serif;background:#0b0d12;color:#e6e8ee;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
 .card{max-width:32rem;padding:2rem;text-align:center}h1{font-size:1.5rem;margin-bottom:.5rem}p{color:#9aa2b1}</style>
-</head><body><div class="card"><h1>Stream unavailable</h1>
-<p>This stream is no longer available at this address.</p>
-<p><strong>Reason:</strong> %s</p>
-<p>The previous access URL has been permanently revoked.</p>
-</div></body></html>`, html.EscapeString(reason))
+</head><body><div class="card"><h1>%s</h1>
+<p>%s</p>
+</div></body></html>`, html.EscapeString(copy.Title), html.EscapeString(copy.Title), html.EscapeString(copy.Subtitle))
 }
 
 // wantsSlate: anything that isn't a browser asking for HTML is treated as a
@@ -643,6 +661,7 @@ func writeSlatePlaylist(w http.ResponseWriter, r *http.Request, variant string) 
 }
 
 func writeSlatePlaylistKey(w http.ResponseWriter, r *http.Request, variant, key string) {
+	base, reason := slateRouteParts(variant)
 	if key != "" {
 		key += "/"
 	}
@@ -650,26 +669,50 @@ func writeSlatePlaylistKey(w http.ResponseWriter, r *http.Request, variant, key 
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	if r.Method != http.MethodHead {
-		_, _ = io.WriteString(w, "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-STREAM-INF:BANDWIDTH=600000,RESOLUTION=1920x1080\n/_sv/slate/"+variant+"/"+key+"index.m3u8\n")
+		_, _ = io.WriteString(w, "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-STREAM-INF:BANDWIDTH=600000,RESOLUTION=1920x1080\n/_sv/slate/"+base+"/"+reason+"/"+key+"index.m3u8\n")
 	}
+}
+func slateRouteParts(v string) (string, string) {
+	parts := strings.SplitN(v, ":", 2)
+	if len(parts) == 2 {
+		return parts[0], parts[1]
+	}
+	if v == slate.Temporary {
+		return v, slate.TemporaryReason
+	}
+	return v, "unauthorized_redistribution"
 }
 
 func (h *Handler) serveSlate(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/"), "/")
-	if (len(parts) != 4 && len(parts) != 5) || parts[0] != "_sv" || parts[1] != "slate" ||
+	if (len(parts) < 4 || len(parts) > 6) || parts[0] != "_sv" || parts[1] != "slate" ||
 		!slate.ValidVariant(parts[2]) {
 		http.NotFound(w, r)
 		return
 	}
-	key, name := "", parts[3]
-	if len(parts) == 5 {
-		key, name = parts[3], parts[4]
+	key, name, reason := "", parts[len(parts)-1], ""
+	if len(parts) == 4 {
+		_, reason = slateRouteParts(parts[2])
+	} else if len(parts) == 5 {
+		if slate.ValidReason(parts[3]) {
+			reason = parts[3]
+		} else {
+			key = parts[3]
+			_, reason = slateRouteParts(parts[2])
+		}
+	} else {
+		reason, key = parts[3], parts[4]
+	}
+	variant := parts[2] + ":" + reason
+	if !slate.ValidVariant(variant) {
+		http.NotFound(w, r)
+		return
 	}
 	if !slate.ValidName(name) || key != "" && !slate.ValidKey(key) {
 		http.NotFound(w, r)
 		return
 	}
-	p, err := h.Slate.GetPath(parts[2], key, name)
+	p, err := h.Slate.GetPath(variant, key, name)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			http.NotFound(w, r)

@@ -145,6 +145,7 @@ require __DIR__ . '/includes/layout_top.php';
     <div class="sv-help">Leak response is automatic: when the Leak Checker finds one of this stream's links posted publicly on GitHub, that link is revoked right away (players get the "Stream unavailable" screen) and the incident is logged.</div>
 
     <label>Replacement reason shown if revoked</label>
+    <div class="sv-help">Each reason has editable video and browser text in <a href="error_screen.php">Error screen</a>.</div>
     <select name="replacement_reason">
       <?php $reasons = [
           'limited_bandwidth' => 'Limited bandwidth',

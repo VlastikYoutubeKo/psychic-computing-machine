@@ -5,7 +5,7 @@ tmp=$(mktemp -d);cid=''
 cleanup(){ [ -z "$cid" ] || docker rm -f "$cid" >/dev/null 2>&1 || :; rm -rf "$tmp"; }
 trap cleanup EXIT INT TERM
 # zenika/alpine-chrome works here; chromedp/headless-shell:latest hangs.
-cid=$(docker run -d --rm --network bridge -p 127.0.0.1:9229:9222 -v "$PWD:/work:ro" --entrypoint chromium-browser zenika/alpine-chrome:latest --headless --no-sandbox --disable-gpu --disable-dev-shm-usage --remote-allow-origins='*' --remote-debugging-address=0.0.0.0 --remote-debugging-port=9222 about:blank)
+cid=$(docker run -d --rm --network bridge -p 127.0.0.1:9229:9222 -v "$PWD:/work:ro" --entrypoint chromium-browser zenika/alpine-chrome:latest --headless --no-sandbox --disable-gpu --disable-dev-shm-usage --allow-file-access-from-files --remote-allow-origins='*' --remote-debugging-address=0.0.0.0 --remote-debugging-port=9222 about:blank)
 for i in $(seq 1 60); do if curl -fsS http://127.0.0.1:9229/json >/dev/null 2>&1; then break; fi; sleep 1; done
 for variant in unavailable temporarily-unavailable; do
  mkdir "$tmp/$variant"

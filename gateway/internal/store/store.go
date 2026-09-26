@@ -70,6 +70,11 @@ func (s *Store) SlateAudioSettings() (file, streamURL string, volume int, err er
 	return file, streamURL, volume, rows.Err()
 }
 
+func (s *Store) SlateText(reason string) (title, subtitle string, err error) {
+	err = s.db.QueryRow(`SELECT title, subtitle FROM slate_texts WHERE reason = ?`, reason).Scan(&title, &subtitle)
+	return title, subtitle, err
+}
+
 // Stream is the subset of streams columns the gateway needs to fetch and
 // authenticate to the source.
 type Stream struct {

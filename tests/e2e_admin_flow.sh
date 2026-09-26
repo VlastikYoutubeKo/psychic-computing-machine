@@ -121,7 +121,7 @@ curl -s -c "$COOKIES" -b "$COOKIES" -o /dev/null \
   "http://127.0.0.1:$ADMIN_PORT/stream_view.php?id=$STREAM_ID"
 CODE=$(curl -s -o "$WORK/revoked.m3u8" -w "%{http_code}" "http://127.0.0.1:$GATEWAY_PORT/live/e2eadmin-priv/$RAW_TOKEN.m3u8")
 check "gateway switches admin-revoked token to slate" "200" "$CODE"
-grep -Eq '/_sv/slate/unavailable/([0-9a-f]{40}/)?index.m3u8' "$WORK/revoked.m3u8" || { echo "FAIL: revoked URL did not point to slate"; FAIL=1; }
+grep -Eq '/_sv/slate/unavailable/unauthorized_redistribution/([0-9a-f]{40}/)?index.m3u8' "$WORK/revoked.m3u8" || { echo "FAIL: revoked URL did not point to slate"; FAIL=1; }
 
 echo
 if [ "$FAIL" -eq 0 ]; then

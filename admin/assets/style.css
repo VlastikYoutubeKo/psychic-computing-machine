@@ -575,3 +575,8 @@ code,.mono {
     scroll-behavior:auto!important
   }
 }
+/* Error-screen artwork previews and compact AI controls. */
+.sv-preview-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:1rem}
+.sv-preview-grid figure{margin:0}.sv-preview-grid img{display:block;width:100%;aspect-ratio:16/9;object-fit:cover;border:1px solid var(--border,#263550);border-radius:12px}.sv-preview-grid figcaption{color:var(--muted,#a8b7d0);font-size:.85rem;margin-top:.45rem}
+.sv-ai-form{border-top:1px solid #263550;margin-top:1.5rem;padding-top:1rem}
+.sv-section-nav{display:flex;gap:.6rem;flex-wrap:wrap;margin:1rem 0}.sv-section-nav a{display:inline-flex;padding:.55rem .85rem;border:1px solid #263550;border-radius:9px;text-decoration:none}

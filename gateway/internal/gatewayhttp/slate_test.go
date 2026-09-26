@@ -65,7 +65,7 @@ func TestRevokedEntrySelectsSharedSlateAndKeepsHTML(t *testing.T) {
 		t.Fatalf("invalid token revealed path: %d", got.Code)
 	}
 	player := slateRequest(t, h, "GET", "/live/slate/real-token.m3u8", "application/vnd.apple.mpegurl")
-	if player.Code != 200 || !strings.Contains(player.Body.String(), "/_sv/slate/unavailable/index.m3u8") {
+	if player.Code != 200 || !strings.Contains(player.Body.String(), "/_sv/slate/unavailable/unauthorized_redistribution/") {
 		t.Fatalf("player response: %d %s", player.Code, player.Body.String())
 	}
 	if f.calls != 0 {
@@ -127,7 +127,7 @@ func TestPersonalSlateRouteAndTokenValidation(t *testing.T) {
 		t.Fatalf("invalid token: %d", got.Code)
 	}
 	got := slateRequest(t, h, "GET", "/live/personal/valid-token.m3u8", "*/*")
-	want := "/_sv/slate/unavailable/" + f.key + "/index.m3u8"
+	want := "/_sv/slate/unavailable/unauthorized_redistribution/" + f.key + "/index.m3u8"
 	if got.Code != 200 || !strings.Contains(got.Body.String(), want) {
 		t.Fatalf("entry: %d %s", got.Code, got.Body.String())
 	}
@@ -173,17 +173,52 @@ func TestUpstreamFailureSelectsTemporarySlateForPlayersOnly(t *testing.T) {
 	}))
 	defer src.Close()
 	seedStream(t, db, src.URL+"/index.m3u8", "live/down", "public")
+	if _, err := db.Exec(`UPDATE slate_texts SET title='Source cooling down', subtitle='Please retry soon.' WHERE reason='temporarily_unavailable'`); err != nil {
+		t.Fatal(err)
+	}
 
 	player := slateRequest(t, h, "GET", "/live/down.m3u8", "*/*")
-	if player.Code != 200 || !strings.Contains(player.Body.String(), "/_sv/slate/temporarily-unavailable/index.m3u8") {
+	if player.Code != 200 || !strings.Contains(player.Body.String(), "/_sv/slate/temporarily-unavailable/temporarily_unavailable/index.m3u8") {
 		t.Fatalf("player on upstream failure: %d %s", player.Code, player.Body.String())
 	}
 	browser := slateRequest(t, h, "GET", "/live/down.m3u8", "text/html")
-	if browser.Code != http.StatusBadGateway {
-		t.Fatalf("browser on upstream failure: %d", browser.Code)
+	if browser.Code != http.StatusBadGateway || !strings.Contains(browser.Body.String(), "Source cooling down") || !strings.Contains(browser.Body.String(), "Please retry soon.") {
+		t.Fatalf("browser on upstream failure: %d %s", browser.Code, browser.Body.String())
 	}
 	if f.calls != 0 {
 		t.Fatal("entry response must not touch the slate encoder")
+	}
+}
+
+func TestReasonSpecificCopyReachesPlayerAndBrowser(t *testing.T) {
+	h, db := newTestHandler(t)
+	f := installFakeSlate(t, h)
+	f.key = strings.Repeat("a", 40)
+	apID := seedStream(t, db, "https://example.org/index.m3u8", "live/reason", "private")
+	addToken(t, db, apID, "reason-token")
+	if _, err := db.Exec(`UPDATE streams SET replacement_reason='limited_bandwidth' WHERE id=(SELECT stream_id FROM access_points WHERE id=?)`, apID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE access_tokens SET revoked_at='2026-09-26T17:31:00.000Z' WHERE access_point_id=?`, apID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE slate_texts SET title='Capacity paused', subtitle='Try again later.' WHERE reason='limited_bandwidth'`); err != nil {
+		t.Fatal(err)
+	}
+	player := slateRequest(t, h, "GET", "/live/reason/reason-token.m3u8", "application/vnd.apple.mpegurl")
+	path := "/_sv/slate/unavailable/limited_bandwidth/" + f.key + "/index.m3u8"
+	if player.Code != 200 || !strings.Contains(player.Body.String(), path) {
+		t.Fatalf("player: %d %s", player.Code, player.Body.String())
+	}
+	if got := slateRequest(t, h, "GET", path, ""); got.Code != 200 {
+		t.Fatalf("reason route: %d", got.Code)
+	}
+	if got := slateRequest(t, h, "GET", "/_sv/slate/temporarily-unavailable/limited_bandwidth/index.m3u8", ""); got.Code != 404 {
+		t.Fatalf("wrong variant: %d", got.Code)
+	}
+	page := slateRequest(t, h, "GET", "/live/reason/reason-token.m3u8", "text/html")
+	if page.Code != 410 || !strings.Contains(page.Body.String(), "Capacity paused") || !strings.Contains(page.Body.String(), "Try again later.") {
+		t.Fatalf("browser: %d %s", page.Code, page.Body.String())
 	}
 }
 

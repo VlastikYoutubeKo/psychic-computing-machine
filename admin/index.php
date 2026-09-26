@@ -2,12 +2,13 @@
 declare(strict_types=1);
 require_once __DIR__ . '/includes/auth.php';
 require_once __DIR__ . '/includes/leak_status.php';
+require_once __DIR__ . '/includes/csrf.php';
 $operator = sv_require_login();
 $db = sv_db();
 
 $streamCount = (int) $db->query('SELECT COUNT(*) FROM streams')->fetchColumn();
 $activeStreamCount = (int) $db->query("SELECT COUNT(*) FROM streams WHERE status='active'")->fetchColumn();
-$privateAccessCount = (int) $db->query("SELECT COUNT(*) FROM access_points WHERE visibility='private' AND status='active'")->fetchColumn();
+$privateAccessCount = (int) $db->query("SELECT COUNT(*) FROM access_points WHERE status='active'")->fetchColumn();
 $openIncidentCount = (int) $db->query("SELECT COUNT(*) FROM incidents WHERE status IN ('new','probable','confirmed')")->fetchColumn();
 
 $recentStreams = $db->query('SELECT id, name, status, created_at FROM streams ORDER BY created_at DESC LIMIT 5')->fetchAll();
@@ -21,9 +22,14 @@ require __DIR__ . '/includes/layout_top.php';
 <div class="sv-grid">
   <div class="sv-stat"><div class="num"><?= $streamCount ?></div><div class="label">Total streams</div></div>
   <div class="sv-stat"><div class="num"><?= $activeStreamCount ?></div><div class="label">Active streams</div></div>
-  <div class="sv-stat"><div class="num"><?= $privateAccessCount ?></div><div class="label">Active private access points</div></div>
+  <div class="sv-stat"><div class="num"><?= $privateAccessCount ?></div><div class="label">Active access points</div></div>
   <div class="sv-stat"><div class="num"><?= $openIncidentCount ?></div><div class="label">Open incidents</div></div>
 </div>
+
+<div class="sv-panel"><h2>Quick actions</h2><div class="sv-section-nav">
+  <a href="stream_form.php">Add stream</a><a href="incidents.php">Review leaks</a><a href="error_screen.php">Edit error screen</a>
+  <form method="post" action="settings.php"><?= sv_csrf_field() ?><input type="hidden" name="action" value="request_leak_scan"><button class="btn-primary" type="submit">Scan now</button></form>
+</div></div>
 
 <h2>Recently added streams</h2>
 <div class="sv-panel">
