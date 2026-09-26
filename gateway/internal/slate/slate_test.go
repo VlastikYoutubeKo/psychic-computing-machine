@@ -183,3 +183,30 @@ func TestFailedRadioSessionRestartsMuted(t *testing.T) {
 		t.Fatal("radio retry not held back")
 	}
 }
+
+func TestRestartOnAudioChangeStopsOnlyStaleSessions(t *testing.T) {
+	m := &Manager{sessions: map[string]*session{}, personal: map[string]descriptor{}, failedAt: map[string]time.Time{}, radioMuted: map[string]time.Time{}, closed: make(chan struct{})}
+	current := AudioSettings{File: "0123456789abcdef0123456789abcdef.opus", Volume: 50}
+	m.loadAudio = func() (AudioSettings, error) { return current, nil }
+	mk := func(a AudioSettings, has bool) (*session, *bool) {
+		cancelled := false
+		done := make(chan struct{})
+		close(done)
+		return &session{dir: t.TempDir(), cancel: func() { cancelled = true }, done: done, lastUsed: time.Now(), audio: a, hasAudio: has}, &cancelled
+	}
+	same, sameCancelled := mk(current, true)
+	stale, staleCancelled := mk(AudioSettings{}, true)
+	unknown, unknownCancelled := mk(AudioSettings{}, false)
+	m.sessions["same"], m.sessions["stale"], m.sessions["unknown"] = same, stale, unknown
+
+	m.RestartOnAudioChange()
+	if *sameCancelled || m.sessions["same"] == nil {
+		t.Fatal("session with current audio must keep running")
+	}
+	if !*staleCancelled || m.sessions["stale"] != nil {
+		t.Fatal("session with old audio must be stopped so it restarts with the new audio")
+	}
+	if *unknownCancelled || m.sessions["unknown"] == nil {
+		t.Fatal("session whose settings could not be loaded must not be restarted")
+	}
+}

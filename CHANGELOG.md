@@ -8,6 +8,9 @@
   per session: 480p 3.4%, 720p 5.0%, 1080p 8.5% of one core (~400 kbit/s per
   viewer), so the worst case of 5 concurrent sessions stays under half a core.
 - Slate audio accepts .opus (Opus in Ogg) and .flac.
+- Changing slate audio in the admin now restarts running slate sessions
+  within ~30 s (reaper tick compares each session's configured audio with
+  the current settings); before, only newly started sessions used it.
 
 ## 2026-09-26 -- Leak response is automatic: revoke + GitHub notice
 

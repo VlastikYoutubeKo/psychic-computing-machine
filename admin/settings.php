@@ -53,7 +53,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 @unlink(dirname(SV_DB_PATH) . '/slate-audio/' . $oldFile);
             }
             sv_audit('slate_audio_disabled');
-            sv_flash('ok', 'Slate audio disabled. Running sessions will finish when idle.');
+            sv_flash('ok', 'Slate audio disabled. Running error screens switch to silence within about 30 seconds.');
         } elseif ($volume === false || $volume < 0 || $volume > 100) {
             sv_flash('err', 'Volume must be 0–100.');
         } else {
@@ -81,7 +81,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     sv_put_setting($db, 'slate_audio_volume', (string) $volume);
                     if ($oldFile !== '' && preg_match('/^[0-9a-f]{32}\.(mp3|ogg|opus|flac|aac|m4a|wav)$/D', $oldFile)) @unlink($dir . '/' . $oldFile);
                     sv_audit('slate_audio_uploaded');
-                    sv_flash('ok', 'Slate audio saved. New sessions will use it.');
+                    sv_flash('ok', 'Slate audio saved. Running error screens switch to it within about 30 seconds.');
                 }
             } elseif ($url !== '') {
                 if (!sv_slate_audio_url_valid($url)) {
@@ -92,7 +92,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     sv_put_setting($db, 'slate_audio_volume', (string) $volume);
                     if ($oldFile !== '' && preg_match('/^[0-9a-f]{32}\.(mp3|ogg|opus|flac|aac|m4a|wav)$/D', $oldFile)) @unlink(dirname(SV_DB_PATH) . '/slate-audio/' . $oldFile);
                     sv_audit('slate_audio_url_updated');
-                    sv_flash('ok', 'Radio URL saved. New sessions will use it.');
+                    sv_flash('ok', 'Radio URL saved. Running error screens switch to it within about 30 seconds.');
                 }
             } else {
                 sv_flash('err', 'Choose an audio file or a radio URL.');

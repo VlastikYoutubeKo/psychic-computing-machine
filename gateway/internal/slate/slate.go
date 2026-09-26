@@ -64,6 +64,11 @@ type session struct {
 	done      chan struct{}
 	lastUsed  time.Time
 	usedRadio bool
+	// The audio settings as configured when this session started (not the
+	// effective ones: a muted radio fallback still records the radio), so a
+	// settings change can restart it without a failing radio restart-looping.
+	audio    AudioSettings
+	hasAudio bool
 }
 type Manager struct {
 	mu              sync.Mutex
@@ -93,6 +98,7 @@ func NewManager() *Manager {
 			select {
 			case <-tick.C:
 				m.ReapIdle()
+				m.RestartOnAudioChange()
 			case <-m.closed:
 				return
 			}
@@ -307,10 +313,13 @@ func (m *Manager) startLocked(variant string, d descriptor, forceSilent bool) (*
 		}
 		filter += ",drawtext=fontfile=" + font + ":textfile=" + p + ":fontcolor=0xa8b7d0:fontsize=38:x=153:y=968"
 	}
-	a := AudioSettings{}
-	if !forceSilent && m.loadAudio != nil {
+	a, configured, hasConfigured := AudioSettings{}, AudioSettings{}, false
+	if m.loadAudio != nil {
 		if loaded, e := m.loadAudio(); e == nil {
-			a = loaded
+			configured, hasConfigured = loaded, true
+			if !forceSilent {
+				a = loaded
+			}
 		}
 	}
 	audio, radio, e := audioArgs(a, m.dataDir)
@@ -329,7 +338,7 @@ func (m *Manager) startLocked(variant string, d descriptor, forceSilent bool) (*
 		cancel()
 		return fail(fmt.Errorf("starting slate ffmpeg: %w", err))
 	}
-	s := &session{started: time.Now(), dir: dir, cancel: cancel, done: make(chan struct{}), lastUsed: time.Now(), usedRadio: radio}
+	s := &session{started: time.Now(), dir: dir, cancel: cancel, done: make(chan struct{}), lastUsed: time.Now(), usedRadio: radio, audio: configured, hasAudio: hasConfigured}
 	go func() { _ = cmd.Wait(); close(s.done) }()
 	return s, nil
 }
@@ -348,6 +357,33 @@ func (m *Manager) ReapIdle() {
 		if time.Since(d.lastUsed) > idleTime {
 			delete(m.personal, key)
 		}
+	}
+}
+
+// RestartOnAudioChange stops sessions whose audio settings differ from the
+// current ones; the next playlist request starts them again with the new
+// audio (viewers see a brief hiccup). Runs on the reaper tick, so a change in
+// the admin applies within ~30 s instead of only after the session idles out.
+func (m *Manager) RestartOnAudioChange() {
+	m.mu.Lock()
+	load := m.loadAudio
+	m.mu.Unlock()
+	if load == nil {
+		return
+	}
+	cur, err := load()
+	if err != nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, s := range m.sessions {
+		if !s.hasAudio || s.audio == cur {
+			continue
+		}
+		delete(m.sessions, id)
+		s.cancel()
+		go func() { <-s.done; _ = os.RemoveAll(s.dir) }()
 	}
 }
 func (m *Manager) Close() {
