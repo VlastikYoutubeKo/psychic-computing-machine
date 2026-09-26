@@ -1,0 +1,58 @@
+<!doctype html>
+<!-- Source for notice.png (the image in public GitHub leak replies).
+     Re-render with tools/render-notice.sh after editing. Colours follow
+     admin/assets/style.css. 1200x400 CSS px, rendered at 2x. -->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; width: 1200px; height: 400px; background: #090e19; overflow: hidden; }
+  body { font-family: "DejaVu Sans", "Inter", system-ui, sans-serif; color: #edf3ff; }
+  .card {
+    position: absolute; inset: 0;
+    background:
+      radial-gradient(700px 380px at 12% 0%, rgba(255,136,153,.16), transparent 70%),
+      radial-gradient(600px 400px at 100% 100%, rgba(129,170,255,.12), transparent 70%),
+      linear-gradient(135deg, #0d1424 0%, #090e19 100%);
+    border: 2px solid #1d2a42; border-radius: 28px; box-sizing: border-box;
+  }
+  .grid {
+    position: absolute; inset: 0; border-radius: 28px; opacity: .35;
+    background-image: linear-gradient(#16213a 1px, transparent 1px), linear-gradient(90deg, #16213a 1px, transparent 1px);
+    background-size: 40px 40px;
+    -webkit-mask-image: linear-gradient(90deg, transparent 0%, #000 55%, #000 100%);
+  }
+  .accent { position: absolute; left: 0; top: 56px; bottom: 56px; width: 8px; border-radius: 0 8px 8px 0; background: #ff8899; box-shadow: 0 0 30px rgba(255,136,153,.6); }
+  .icon {
+    position: absolute; left: 88px; top: 50%; transform: translateY(-50%);
+    width: 150px; height: 150px; border-radius: 40px;
+    background: rgba(255,136,153,.10); border: 2px solid rgba(255,136,153,.35);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .text { position: absolute; left: 290px; right: 80px; top: 50%; transform: translateY(-50%); }
+  .eyebrow { font-size: 20px; letter-spacing: .22em; font-weight: 700; color: #ff8899; text-transform: uppercase; margin-bottom: 14px; }
+  h1 { margin: 0; font-size: 64px; line-height: 1.05; font-weight: 800; letter-spacing: -.01em; }
+  p { margin: 18px 0 0; font-size: 27px; line-height: 1.4; color: #a8b7d0; max-width: 780px; }
+  .mark { position: absolute; right: 44px; bottom: 34px; font-size: 18px; font-weight: 700; letter-spacing: .28em; color: #8192ae; }
+  .mark span { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #81aaff; margin-right: 10px; vertical-align: 2px; box-shadow: 0 0 12px #81aaff; }
+</style>
+</head>
+<body>
+  <div class="card"></div>
+  <div class="grid"></div>
+  <div class="accent"></div>
+  <div class="icon">
+    <!-- broken link -->
+    <svg width="84" height="84" viewBox="0 0 24 24" fill="none" stroke="#ff8899" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M9 17H7A5 5 0 0 1 7 7h2"/><path d="M15 7h2a5 5 0 0 1 4 8"/>
+      <line x1="8" y1="12" x2="12" y2="12"/><line x1="2" y1="2" x2="22" y2="22"/>
+    </svg>
+  </div>
+  <div class="text">
+    <div class="eyebrow">Link revoked</div>
+    <h1>Stream unavailable</h1>
+    <p>This link was shared publicly and has been revoked by its owner. It now only shows this notice.</p>
+  </div>
+  <div class="mark"><span></span>STREAMVAULT</div>
+</body>
+</html>

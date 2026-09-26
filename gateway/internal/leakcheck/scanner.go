@@ -234,7 +234,7 @@ func (sc *Scanner) respond(ctx context.Context, m Match, incidentID int64, sourc
 	if done, err := sc.Store.HasReply(sourceURL); err != nil || done {
 		return err
 	}
-	commentURL, err := sc.GitHub.PostIssueComment(ctx, owner, repo, number, NoticeBody(sc.BaseURL))
+	commentURL, err := sc.GitHub.PostIssueComment(ctx, owner, repo, number, NoticeBody(sc.BaseURL, time.Now()))
 	if err != nil {
 		return err
 	}

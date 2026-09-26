@@ -15,14 +15,16 @@ function sv_parse_issue_url(string $url): ?array
     return $n > 0 ? [$m[1], $m[2], $n] : null;
 }
 
-function sv_notice_body(string $baseUrl): string
+function sv_notice_body(string $baseUrl, ?int $revokedAt = null): string
 {
-    $img = rtrim($baseUrl, '/') . '/_sv/notice.png';
-    $body = 'This stream link has been revoked by its owner and no longer works.';
+    $body = "> [!CAUTION]\n"
+        . "> **This stream link has been revoked and no longer works.**\n"
+        . "> It was shared publicly, so its owner took it down. Re-posting it won't bring it back.\n";
+    $img = rtrim($baseUrl, '/') . '/_sv/notice.png?v=2';
     if (preg_match('#^https?://#', $img)) {
-        $body .= "\n\n![Stream unavailable](" . $img . ')';
+        $body .= "\n<img src=\"" . htmlspecialchars($img, ENT_QUOTES) . "\" alt=\"Stream unavailable: link revoked\" width=\"600\">\n";
     }
-    return $body . "\n\n<sub>Automated notice from StreamVault.</sub>";
+    return $body . "\n<sub>Revoked " . gmdate('j M Y, H:i', $revokedAt ?? time()) . " UTC · automated notice from StreamVault</sub>";
 }
 
 /** @return array{0:bool,1:string} [ok, comment html_url or error text] */

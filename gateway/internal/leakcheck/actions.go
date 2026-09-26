@@ -156,18 +156,24 @@ func ParseIssueURL(u string) (owner, repo string, number int, ok bool) {
 
 // NoticeImagePath is served by the gateway (gatewayhttp) on the stream
 // base URL, so the public comment never reveals the admin host.
-const NoticeImagePath = "/_sv/notice.png"
+// ?v= busts GitHub's camo image cache when the artwork changes; the
+// gateway routes on the path only. Bump together with github_reply.php.
+const NoticeImagePath = "/_sv/notice.png?v=2"
 
-// NoticeBody is the public comment text. Deliberately says nothing about
+// NoticeBody is the public comment text: a GitHub "caution" callout, the
+// banner image (shown at 600px; the PNG is 2x for sharp HiDPI rendering)
+// and a footer with the revocation time. Deliberately says nothing about
 // which stream, token or source this was -- only that the link is dead.
-func NoticeBody(baseURL string) string {
+// Keep in sync with admin/includes/github_reply.php sv_notice_body().
+func NoticeBody(baseURL string, revokedAt time.Time) string {
+	var b strings.Builder
+	b.WriteString("> [!CAUTION]\n")
+	b.WriteString("> **This stream link has been revoked and no longer works.**\n")
+	b.WriteString("> It was shared publicly, so its owner took it down. Re-posting it won't bring it back.\n")
 	img := strings.TrimRight(baseURL, "/") + NoticeImagePath
-	if u, err := url.Parse(img); err != nil || (u.Scheme != "https" && u.Scheme != "http") {
-		img = ""
+	if u, err := url.Parse(img); err == nil && (u.Scheme == "https" || u.Scheme == "http") {
+		b.WriteString("\n<img src=\"" + img + "\" alt=\"Stream unavailable: link revoked\" width=\"600\">\n")
 	}
-	body := "This stream link has been revoked by its owner and no longer works."
-	if img != "" {
-		body += "\n\n![Stream unavailable](" + img + ")"
-	}
-	return body + "\n\n<sub>Automated notice from StreamVault.</sub>"
+	b.WriteString("\n<sub>Revoked " + revokedAt.UTC().Format("2 Jan 2006, 15:04 UTC") + " · automated notice from StreamVault</sub>")
+	return b.String()
 }
