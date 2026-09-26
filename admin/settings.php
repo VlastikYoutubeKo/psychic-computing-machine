@@ -16,12 +16,13 @@ function sv_put_setting(PDO $db, string $key, string $value): void
 function sv_slate_audio_extension(string $path, string $name): ?string
 {
     $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
-    if (!in_array($ext, ['mp3', 'ogg', 'aac', 'm4a', 'wav'], true)) return null;
+    if (!in_array($ext, ['mp3', 'ogg', 'opus', 'flac', 'aac', 'm4a', 'wav'], true)) return null;
     $head = file_get_contents($path, false, null, 0, 16);
     if ($head === false || strlen($head) < 12) return null;
     $valid = match ($ext) {
         'mp3' => str_starts_with($head, 'ID3') || (ord($head[0]) === 0xff && (ord($head[1]) & 0xe0) === 0xe0),
-        'ogg' => str_starts_with($head, 'OggS'),
+        'ogg', 'opus' => str_starts_with($head, 'OggS'), // .opus is Opus in an Ogg container
+        'flac' => str_starts_with($head, 'fLaC'),
         'aac' => ord($head[0]) === 0xff && (ord($head[1]) & 0xf0) === 0xf0,
         'm4a' => substr($head, 4, 4) === 'ftyp',
         'wav' => str_starts_with($head, 'RIFF') && substr($head, 8, 4) === 'WAVE',
@@ -48,7 +49,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $volume = filter_var($_POST['slate_audio_volume'] ?? null, FILTER_VALIDATE_INT);
         if ($action === 'disable_slate_audio') {
             $db->exec("DELETE FROM settings WHERE key IN ('slate_audio_file','slate_audio_url','slate_audio_volume')");
-            if ($oldFile !== '' && preg_match('/^[0-9a-f]{32}\.(mp3|ogg|aac|m4a|wav)$/D', $oldFile)) {
+            if ($oldFile !== '' && preg_match('/^[0-9a-f]{32}\.(mp3|ogg|opus|flac|aac|m4a|wav)$/D', $oldFile)) {
                 @unlink(dirname(SV_DB_PATH) . '/slate-audio/' . $oldFile);
             }
             sv_audit('slate_audio_disabled');
@@ -67,7 +68,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $ext = ($upload['error'] ?? null) === UPLOAD_ERR_OK && is_uploaded_file($tmp) && $size > 0 && $size <= 25 * 1024 * 1024
                     ? sv_slate_audio_extension($tmp, (string) ($upload['name'] ?? '')) : null;
                 if ($ext === null) {
-                    sv_flash('err', 'Upload a valid MP3, OGG, AAC, M4A or WAV file up to 25 MB.');
+                    sv_flash('err', 'Upload a valid MP3, OGG, OPUS, FLAC, AAC, M4A or WAV file up to 25 MB.');
                 } else {
                     $dir = dirname(SV_DB_PATH) . '/slate-audio';
                     if (!is_dir($dir) && !mkdir($dir, 0770, true) && !is_dir($dir)) throw new RuntimeException('Cannot create slate audio directory');
@@ -78,7 +79,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     sv_put_setting($db, 'slate_audio_file', $name);
                     $db->prepare("DELETE FROM settings WHERE key = 'slate_audio_url'")->execute();
                     sv_put_setting($db, 'slate_audio_volume', (string) $volume);
-                    if ($oldFile !== '' && preg_match('/^[0-9a-f]{32}\.(mp3|ogg|aac|m4a|wav)$/D', $oldFile)) @unlink($dir . '/' . $oldFile);
+                    if ($oldFile !== '' && preg_match('/^[0-9a-f]{32}\.(mp3|ogg|opus|flac|aac|m4a|wav)$/D', $oldFile)) @unlink($dir . '/' . $oldFile);
                     sv_audit('slate_audio_uploaded');
                     sv_flash('ok', 'Slate audio saved. New sessions will use it.');
                 }
@@ -89,7 +90,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     sv_put_setting($db, 'slate_audio_url', $url);
                     $db->prepare("DELETE FROM settings WHERE key = 'slate_audio_file'")->execute();
                     sv_put_setting($db, 'slate_audio_volume', (string) $volume);
-                    if ($oldFile !== '' && preg_match('/^[0-9a-f]{32}\.(mp3|ogg|aac|m4a|wav)$/D', $oldFile)) @unlink(dirname(SV_DB_PATH) . '/slate-audio/' . $oldFile);
+                    if ($oldFile !== '' && preg_match('/^[0-9a-f]{32}\.(mp3|ogg|opus|flac|aac|m4a|wav)$/D', $oldFile)) @unlink(dirname(SV_DB_PATH) . '/slate-audio/' . $oldFile);
                     sv_audit('slate_audio_url_updated');
                     sv_flash('ok', 'Radio URL saved. New sessions will use it.');
                 }
@@ -205,8 +206,8 @@ require __DIR__ . '/includes/layout_top.php';
   <p class="sv-help">Current source: <?= isset($slateAudio['slate_audio_file']) ? 'uploaded file' : (isset($slateAudio['slate_audio_url']) ? 'radio URL' : 'silence') ?>. Changes apply when a new slate session starts. Public broadcasts require music rights.</p>
   <form method="post" enctype="multipart/form-data">
     <?= sv_csrf_field() ?><input type="hidden" name="action" value="save_slate_audio">
-    <label for="slate-file">Upload audio (MP3, OGG, AAC, M4A, WAV; max 25 MB)</label>
-    <input id="slate-file" type="file" name="slate_audio_file" accept=".mp3,.ogg,.aac,.m4a,.wav,audio/*">
+    <label for="slate-file">Upload audio (MP3, OGG, OPUS, FLAC, AAC, M4A, WAV; max 25 MB)</label>
+    <input id="slate-file" type="file" name="slate_audio_file" accept=".mp3,.ogg,.opus,.flac,.aac,.m4a,.wav,audio/*">
     <label for="slate-url">Or radio stream URL</label>
     <input id="slate-url" type="url" name="slate_audio_url" maxlength="2048" value="<?= h($slateAudio['slate_audio_url'] ?? '') ?>" placeholder="https://example.org/radio.mp3">
     <label for="slate-volume">Volume (0–100)</label>

@@ -34,7 +34,7 @@ const (
 
 var segmentName = regexp.MustCompile(`^seg[0-9]{6,9}\.ts$`)
 var opaqueKey = regexp.MustCompile(`^[0-9a-f]{40}$`)
-var audioName = regexp.MustCompile(`^[0-9a-f]{32}\.(mp3|ogg|aac|m4a|wav)$`)
+var audioName = regexp.MustCompile(`^[0-9a-f]{32}\.(mp3|ogg|opus|flac|aac|m4a|wav)$`)
 
 func ValidName(n string) bool    { return n == "index.m3u8" || segmentName.MatchString(n) }
 func ValidVariant(v string) bool { return v == Unavailable || v == Temporary }

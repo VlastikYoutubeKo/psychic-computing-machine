@@ -18,6 +18,14 @@ curl -fsS -c "$COOKIES" -b "$COOKIES" -o /dev/null -F "csrf=$TOKEN" -F action=sa
 NAME="$(sqlite3 "$STREAMVAULT_DB" "SELECT value FROM settings WHERE key='slate_audio_file'")"
 test -n "$NAME"; test -f "$WORK/slate-audio/$NAME"; test "$(stat -c %a "$WORK/slate-audio/$NAME")" = 640
 test "$(sqlite3 "$STREAMVAULT_DB" "SELECT value FROM settings WHERE key='slate_audio_volume'")" = 40
+# .opus (Opus in Ogg) must be accepted too, then switch back to the mp3.
+ffmpeg -hide_banner -loglevel error -f lavfi -i 'sine=frequency=440:duration=1' -c:a libopus "$WORK/music.opus"
+curl -fsS -c "$COOKIES" -b "$COOKIES" -o /dev/null -F "csrf=$TOKEN" -F action=save_slate_audio -F slate_audio_volume=40 -F "slate_audio_file=@$WORK/music.opus" "http://127.0.0.1:$PORT/settings.php"
+OPUS="$(sqlite3 "$STREAMVAULT_DB" "SELECT value FROM settings WHERE key='slate_audio_file'")"
+case "$OPUS" in *.opus) ;; *) echo "FAIL: .opus upload rejected ($OPUS)"; exit 1;; esac
+test ! -e "$WORK/slate-audio/$NAME"
+curl -fsS -c "$COOKIES" -b "$COOKIES" -o /dev/null -F "csrf=$TOKEN" -F action=save_slate_audio -F slate_audio_volume=40 -F "slate_audio_file=@$WORK/music.mp3" "http://127.0.0.1:$PORT/settings.php"
+NAME="$(sqlite3 "$STREAMVAULT_DB" "SELECT value FROM settings WHERE key='slate_audio_file'")"
 printf 'not audio' > "$WORK/bad.mp3"
 curl -fsS -c "$COOKIES" -b "$COOKIES" -o /dev/null -F "csrf=$TOKEN" -F action=save_slate_audio -F slate_audio_volume=40 -F "slate_audio_file=@$WORK/bad.mp3" "http://127.0.0.1:$PORT/settings.php"
 test "$(sqlite3 "$STREAMVAULT_DB" "SELECT value FROM settings WHERE key='slate_audio_file'")" = "$NAME"
