@@ -47,6 +47,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $db->prepare("DELETE FROM settings WHERE key = 'github_token_enc'")->execute();
         sv_audit('github_token_cleared');
         sv_flash('ok', 'GitHub token removed.');
+    } elseif ($action === 'save_reply_allowlist') {
+        $entries = preg_split('/[\s,]+/', strtolower(trim((string) ($_POST['reply_allowlist'] ?? ''))), -1, PREG_SPLIT_NO_EMPTY);
+        $bad = array_filter($entries, fn ($e) => !preg_match('/^[a-z0-9-]+\/[a-z0-9_.-]+$/D', $e) || str_contains($e, '..'));
+        if ($bad || count($entries) > 50) {
+            sv_flash('err', 'Enter owner/repository entries only (max 50), one per line.');
+        } else {
+            sv_put_setting($db, 'github_reply_allowlist', implode("\n", array_unique($entries)));
+            sv_audit('settings_updated', 'github_reply_allowlist', ['count' => count($entries)]);
+            sv_flash('ok', 'Automatic reply allowlist saved.');
+        }
     } elseif ($action === 'request_leak_scan') {
         if (!$db->query("SELECT 1 FROM settings WHERE key = 'github_token_enc'")->fetchColumn()) {
             sv_flash('err', 'Configure a GitHub token before requesting a scan.');
@@ -56,7 +66,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $db->exec("INSERT INTO settings (key, value) VALUES ('leak_scan_requested_at', strftime('%Y-%m-%dT%H:%M:%fZ','now'))
                 ON CONFLICT(key) DO UPDATE SET value = excluded.value");
             sv_audit('leak_scan_requested');
-            sv_flash('ok', 'Scan requested. The checker timer will pick it up within about a minute if running.');
+            sv_flash('ok', 'Scan requested. The checker timer picks it up within about 5 minutes.');
         }
     } elseif ($action === 'add_leak_source') {
         $provider = $_POST['provider'] ?? '';
@@ -102,6 +112,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 $baseUrl = $db->query("SELECT value FROM settings WHERE key = 'gateway_base_url'")->fetchColumn() ?: '';
 $githubTokenSet = (bool) $db->query("SELECT 1 FROM settings WHERE key = 'github_token_enc'")->fetchColumn();
+$replyAllowlist = (string) ($db->query("SELECT value FROM settings WHERE key = 'github_reply_allowlist'")->fetchColumn() ?: '');
 $sources = $db->query('SELECT id, provider, identifier, enabled, last_scanned_at FROM leak_sources ORDER BY provider, identifier')->fetchAll();
 
 $pageTitle = 'Settings';
@@ -151,6 +162,18 @@ require __DIR__ . '/includes/layout_top.php';
       <button type="submit" class="btn-danger" style="margin-top:0.75rem;">Remove token</button>
     </form>
   <?php endif; ?>
+</div>
+
+<div class="sv-panel">
+  <h2 style="margin-top:0;">Automatic GitHub replies</h2>
+  <p class="sv-help">When a stream is set to "Revoke automatically on confirmed leak", the checker revokes the leaked link and, only for issues/PRs in these repositories, posts a public comment with the "Stream unavailable" image. Everywhere else, reply from the incident page after reviewing. The GitHub token needs the <code>public_repo</code> scope (classic token) to comment.</p>
+  <form method="post">
+    <?= sv_csrf_field() ?>
+    <input type="hidden" name="action" value="save_reply_allowlist">
+    <label for="reply_allowlist">Repositories (owner/repo, one per line)</label>
+    <textarea id="reply_allowlist" name="reply_allowlist" rows="3" placeholder="owner/repo"><?= h($replyAllowlist) ?></textarea>
+    <button type="submit" class="btn btn-primary">Save allowlist</button>
+  </form>
 </div>
 
 <div class="sv-panel">

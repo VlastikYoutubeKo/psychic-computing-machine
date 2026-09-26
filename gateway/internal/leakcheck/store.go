@@ -273,18 +273,41 @@ func (s *Store) tokensFor(accessPointID int64) ([]TokenInfo, error) {
 // for anything stronger than a bare Mention, creates or attaches an
 // incidents row. Automated findings never set an incident straight to
 // "confirmed" -- that stays a deliberate human action (admin/incidents.php,
-// Phase 7) regardless of how strong the automated evidence looks; see
-// ARCHITECTURE.md "Leak Checker" for the full mapping and why.
-func (s *Store) RecordMatch(m Match, source, sourceURL string) (created bool, err error) {
+// Phase 7) unless the stream opted into automatic revocation (see
+// AutoRevoke). An existing finding is upgraded when the same content now
+// classifies stronger (e.g. the operator marked the path secret after a
+// Mention was recorded); otherwise re-seeing it is a no-op, so dismissing or
+// resolving an incident no longer makes every later scan open a fresh,
+// finding-less incident for the same old content.
+//
+// incidentID is the incident this finding belongs to (new or existing),
+// nil for a bare Mention.
+func (s *Store) RecordMatch(m Match, source, sourceURL string) (created bool, incidentID *int64, err error) {
 	dedupeKey := DedupeKey(source, sourceURL, m.MatchedValue)
 
 	tx, err := s.db.Begin()
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
 	defer tx.Rollback()
 
-	var incidentID *int64
+	var existingID int64
+	var existingConf string
+	var existingIncident sql.NullInt64
+	err = tx.QueryRow(`SELECT id, confidence, incident_id FROM leak_findings WHERE dedupe_key = ?`, dedupeKey).
+		Scan(&existingID, &existingConf, &existingIncident)
+	exists := err == nil
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return false, nil, err
+	}
+	if exists && confidenceRank(Confidence(existingConf)) >= confidenceRank(m.Confidence) {
+		if existingIncident.Valid {
+			id := existingIncident.Int64
+			return false, &id, nil
+		}
+		return false, nil, nil
+	}
+
 	if m.Confidence != Mention {
 		status := "new"
 		if m.Confidence == Confirmed {
@@ -292,26 +315,40 @@ func (s *Store) RecordMatch(m Match, source, sourceURL string) (created bool, er
 		}
 		incidentID, err = findOrCreateIncident(tx, m, source, sourceURL, status)
 		if err != nil {
-			return false, err
+			return false, nil, err
 		}
 	}
 
-	res, err := tx.Exec(`
-		INSERT OR IGNORE INTO leak_findings
-			(incident_id, source, source_url, matched_value, confidence, dedupe_key, access_point_id, access_token_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		incidentID, source, sourceURL, m.MatchedValue, string(m.Confidence), dedupeKey, m.AccessPointID, m.TokenID)
-	if err != nil {
-		return false, err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return false, err
+	if exists {
+		if _, err := tx.Exec(`UPDATE leak_findings SET confidence = ?, matched_value = ?,
+				incident_id = COALESCE(?, incident_id), access_token_id = COALESCE(?, access_token_id)
+			WHERE id = ?`, string(m.Confidence), m.MatchedValue, incidentID, m.TokenID, existingID); err != nil {
+			return false, nil, err
+		}
+	} else {
+		if _, err := tx.Exec(`
+			INSERT INTO leak_findings
+				(incident_id, source, source_url, matched_value, confidence, dedupe_key, access_point_id, access_token_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			incidentID, source, sourceURL, m.MatchedValue, string(m.Confidence), dedupeKey, m.AccessPointID, m.TokenID); err != nil {
+			return false, nil, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
-		return false, err
+		return false, nil, err
 	}
-	return n > 0, nil
+	return true, incidentID, nil
+}
+
+func confidenceRank(c Confidence) int {
+	switch c {
+	case Confirmed:
+		return 2
+	case Probable:
+		return 1
+	default:
+		return 0
+	}
 }
 
 // findOrCreateIncident groups findings the way the spec requires ("Pokud
@@ -364,6 +401,8 @@ type RunSummary struct {
 	StreamsChecked  int
 	QueriesMade     int
 	FindingsCreated int
+	AutoRevoked     int
+	RepliesPosted   int
 	Err             error
 }
 

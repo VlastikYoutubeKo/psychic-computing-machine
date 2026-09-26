@@ -79,10 +79,11 @@ func Classify(ap AccessPointInfo, baseURL, text string) *Match {
 	}
 
 	if ap.Visibility != "private" {
-		if ap.PathIsSecret {
-			return &Match{Confidence: Confirmed, AccessPointID: ap.ID, StreamID: ap.StreamID, MatchedValue: anchor}
-		}
-		return &Match{Confidence: Mention, AccessPointID: ap.ID, StreamID: ap.StreamID, MatchedValue: anchor}
+		// A public access point's URL *is* the credential: anyone who has it
+		// can watch. Seeing it posted publicly is therefore a confirmed leak,
+		// no separate "path is secret" opt-in (that extra switch made the
+		// admin UI confusing and silently turned real leaks into Mentions).
+		return &Match{Confidence: Confirmed, AccessPointID: ap.ID, StreamID: ap.StreamID, MatchedValue: anchor}
 	}
 
 	candidate := candidateTokenAfter(anchor, text)

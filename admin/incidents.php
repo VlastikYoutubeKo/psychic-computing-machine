@@ -3,6 +3,8 @@ declare(strict_types=1);
 require_once __DIR__ . '/includes/auth.php';
 require_once __DIR__ . '/includes/csrf.php';
 require_once __DIR__ . '/includes/leak_status.php';
+require_once __DIR__ . '/includes/github_reply.php';
+require_once __DIR__ . '/includes/secret_box.php';
 $operator = sv_require_login();
 $db = sv_db();
 
@@ -36,7 +38,46 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ->execute([$streamId, 'manual', $sourceUrl ?: null, $notes ?: null]);
             $id = (int) $db->lastInsertId();
             sv_audit('incident_created', "incident:$id", ['stream_id' => $streamId]);
-            sv_flash('ok', "Incident #$id recorded. No token was revoked or rotated.");
+            sv_flash('ok', "Incident #$id recorded. Click Confirm to revoke the leaked link.");
+        }
+        sv_redirect('incidents.php');
+    }
+
+    if ($action === 'github_reply') {
+        $id = filter_var($_POST['incident_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+        $stmt = $db->prepare('SELECT id, source_url, actions_taken FROM incidents WHERE id = ?');
+        $stmt->execute([$id ?: 0]);
+        $incident = $stmt->fetch();
+        $parsed = $incident ? sv_parse_issue_url((string) $incident['source_url']) : null;
+        $encToken = $db->query("SELECT value FROM settings WHERE key = 'github_token_enc'")->fetchColumn();
+        $baseUrl = (string) $db->query("SELECT value FROM settings WHERE key = 'gateway_base_url'")->fetchColumn();
+        if (!$parsed) {
+            sv_flash('err', 'This incident has no GitHub issue or pull request to reply to.');
+        } elseif (!$encToken || $baseUrl === '') {
+            sv_flash('err', 'Configure the GitHub token and stream base URL first.');
+        } else {
+            $dup = $db->prepare('SELECT 1 FROM leak_replies WHERE source_url = ?');
+            $dup->execute([$incident['source_url']]);
+            if ($dup->fetchColumn()) {
+                sv_flash('err', 'A reply was already posted to this issue.');
+            } else {
+                $token = sv_decrypt(sv_load_key(SV_KEY_FILE), (string) $encToken);
+                [$ok, $result] = sv_post_github_comment($token, $parsed[0], $parsed[1], $parsed[2], sv_notice_body($baseUrl));
+                if (!$ok) {
+                    sv_flash('err', 'Reply failed: ' . $result . '.');
+                } else {
+                    $db->beginTransaction();
+                    $db->prepare('INSERT OR IGNORE INTO leak_replies (source_url, incident_id, comment_url, actor) VALUES (?, ?, ?, ?)')
+                        ->execute([$incident['source_url'], $incident['id'], $result, 'operator:' . $operator['id']]);
+                    $history = json_decode($incident['actions_taken'] ?? '[]', true);
+                    $history = is_array($history) ? $history : [];
+                    $history[] = ['at' => gmdate('c'), 'actor' => 'operator:' . $operator['id'], 'action' => 'github_reply', 'target' => $result];
+                    $db->prepare('UPDATE incidents SET actions_taken = ? WHERE id = ?')->execute([json_encode($history), $incident['id']]);
+                    $db->commit();
+                    sv_audit('incident_github_reply', 'incident:' . $incident['id'], ['comment' => $result]);
+                    sv_flash('ok', 'Reply posted on GitHub.');
+                }
+            }
         }
         sv_redirect('incidents.php');
     }
@@ -54,7 +95,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         $db->beginTransaction();
         try {
-            $stmt = $db->prepare('SELECT status, actions_taken FROM incidents WHERE id = ?');
+            $stmt = $db->prepare('SELECT status, actions_taken, access_token_id, stream_id FROM incidents WHERE id = ?');
             $stmt->execute([$id]);
             $incident = $stmt->fetch();
             $transition = $transitions[$action];
@@ -73,14 +114,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'from' => $incident['status'],
                 'to' => $transition['to'],
             ];
+            // Confirming a leak revokes exactly the leaked link: the token the
+            // checker identified, else the access point its findings point at.
+            // A manual incident without either has nothing specific to revoke.
+            $revoked = null;
+            if ($action === 'confirm') {
+                if ($incident['access_token_id']) {
+                    $r = $db->prepare("UPDATE access_tokens SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'), revoked_reason = 'leak_confirmed' WHERE id = ? AND revoked_at IS NULL");
+                    $r->execute([$incident['access_token_id']]);
+                    $revoked = $r->rowCount() ? 'token:' . $incident['access_token_id'] : null;
+                } else {
+                    $f = $db->prepare('SELECT access_point_id FROM leak_findings WHERE incident_id = ? AND access_point_id IS NOT NULL ORDER BY id DESC LIMIT 1');
+                    $f->execute([$id]);
+                    $apId = $f->fetchColumn();
+                    if ($apId) {
+                        $r = $db->prepare("UPDATE access_points SET status = 'revoked' WHERE id = ? AND status = 'active'");
+                        $r->execute([$apId]);
+                        $revoked = $r->rowCount() ? 'access_point:' . $apId : null;
+                    }
+                }
+                if ($revoked) {
+                    $history[count($history) - 1]['action'] = 'revoked';
+                    $history[count($history) - 1]['target'] = $revoked;
+                }
+            }
             $stmt = $db->prepare('UPDATE incidents SET status = ?, actions_taken = ? WHERE id = ? AND status = ?');
             $stmt->execute([$transition['to'], json_encode($history, JSON_THROW_ON_ERROR), $id, $incident['status']]);
             if ($stmt->rowCount() !== 1) {
                 throw new RuntimeException('Incident changed concurrently.');
             }
-            sv_audit('incident_' . $action, "incident:$id", ['from' => $incident['status'], 'to' => $transition['to']]);
+            sv_audit('incident_' . $action, "incident:$id", ['from' => $incident['status'], 'to' => $transition['to'], 'revoked' => $revoked ?? null]);
             $db->commit();
-            sv_flash('ok', "Incident #$id is now {$transition['to']}. No token was revoked or rotated.");
+            if ($action === 'confirm') {
+                sv_flash('ok', $revoked
+                    ? "Incident #$id confirmed and the leaked link ($revoked) was revoked. Players now get the \"Stream unavailable\" screen."
+                    : "Incident #$id confirmed. There was no specific active link to revoke (already revoked, or a manual incident without one); revoke it from the stream page if needed.");
+            } else {
+                sv_flash('ok', "Incident #$id is now {$transition['to']}.");
+            }
         } catch (Throwable $e) {
             if ($db->inTransaction()) {
                 $db->rollBack();
@@ -96,7 +167,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 $streams = $db->query('SELECT id, name FROM streams ORDER BY name COLLATE NOCASE')->fetchAll();
-$incidents = $db->query('SELECT i.*, s.name AS stream_name FROM incidents i LEFT JOIN streams s ON s.id = i.stream_id ORDER BY i.detected_at DESC, i.id DESC')->fetchAll();
+$incidents = $db->query('SELECT i.*, s.name AS stream_name, r.comment_url AS reply_url FROM incidents i LEFT JOIN streams s ON s.id = i.stream_id LEFT JOIN leak_replies r ON r.source_url = i.source_url ORDER BY i.detected_at DESC, i.id DESC')->fetchAll();
+$replyBase = (string) ($db->query("SELECT value FROM settings WHERE key = 'gateway_base_url'")->fetchColumn() ?: '');
 
 $pageTitle = 'Incidents';
 $activeNav = 'incidents';
@@ -105,8 +177,9 @@ require __DIR__ . '/includes/layout_top.php';
 <h1>Incidents</h1>
 
 <?php sv_render_leak_status($db); ?>
-<div class="sv-panel">You can record and triage incidents manually here. Confirming an incident does
-  <strong>not</strong> revoke a token, rotate source credentials, or change the stream.</div>
+<div class="sv-panel">You can record and triage incidents manually here. Confirming an incident will
+  revoke the leaked link (the identified token, or the access point that was found). Links the Leak Checker
+  finds on GitHub are revoked automatically, and a notice is posted on issues in allowlisted repositories.</div>
 
 <div class="sv-panel">
   <h2 style="margin-top:0;">Record an incident</h2>
@@ -147,6 +220,10 @@ require __DIR__ . '/includes/layout_top.php';
           <td>
             <?php if ($i['source_url']): ?><div class="mono"><?= h($i['source_url']) ?></div><?php endif; ?>
             <?php if ($i['notes']): ?><div><?= nl2br(h($i['notes'])) ?></div><?php endif; ?>
+            <?php foreach ((json_decode($i['actions_taken'] ?? '[]', true) ?: []) as $act): ?>
+              <?php if (is_array($act) && ($act['action'] ?? '') === 'auto_revoked'): ?><div class="sv-help">Auto-revoked <?= h($act['target'] ?? '') ?> at <?= h($act['at'] ?? '') ?></div><?php endif; ?>
+            <?php endforeach; ?>
+            <?php if (!empty($i['reply_url'])): ?><div><a href="<?= h($i['reply_url']) ?>" target="_blank" rel="noopener noreferrer">GitHub reply posted</a></div><?php endif; ?>
           </td>
           <td>
             <?php $allowed = in_array($i['status'], ['new', 'probable'], true) ? ['confirm' => 'Confirm', 'dismiss' => 'Dismiss'] : ($i['status'] === 'confirmed' ? ['resolve' => 'Resolve'] : []); ?>
@@ -158,6 +235,14 @@ require __DIR__ . '/includes/layout_top.php';
                 <button type="submit" class="btn-sm"><?= h($label) ?></button>
               </form>
             <?php endforeach; ?>
+            <?php if (empty($i['reply_url']) && sv_parse_issue_url((string) $i['source_url']) && $replyBase !== ''): ?>
+              <form method="post" style="display:inline;" data-confirm="<?= h("Post this public comment on GitHub?\n\n" . sv_notice_body($replyBase)) ?>">
+                <?= sv_csrf_field() ?>
+                <input type="hidden" name="action" value="github_reply">
+                <input type="hidden" name="incident_id" value="<?= (int) $i['id'] ?>">
+                <button type="submit" class="btn-sm">Reply on GitHub</button>
+              </form>
+            <?php endif; ?>
           </td>
         </tr>
       <?php endforeach; ?>

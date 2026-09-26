@@ -147,3 +147,11 @@ func TestUpstreamFailureSelectsTemporarySlateForPlayersOnly(t *testing.T) {
 		t.Fatal("entry response must not touch the slate encoder")
 	}
 }
+
+func TestNoticeImageIsServedWithoutAccessPointLookup(t *testing.T) {
+	h, _ := newTestHandler(t)
+	got := slateRequest(t, h, "GET", "/_sv/notice.png", "")
+	if got.Code != 200 || got.Header().Get("Content-Type") != "image/png" || !strings.HasPrefix(got.Body.String(), "\x89PNG") {
+		t.Fatalf("notice: %d %s", got.Code, got.Header().Get("Content-Type"))
+	}
+}

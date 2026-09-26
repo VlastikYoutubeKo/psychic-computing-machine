@@ -1,5 +1,34 @@
 # Changelog
 
+## 2026-09-26 -- Leak response is automatic: revoke + GitHub notice
+
+The admin offered "Rotate automatically on confirmed leak" (and
+"monitor only"), but nothing implemented either -- the stream form's own help
+text admitted it -- and a public access point's link found on GitHub was only
+ever a "mention" unless the operator had also flipped a separate "path is
+secret" switch. Confirming or resolving an incident changed a status and
+nothing else. In practice a real leak (the owner's own test issue) did nothing.
+
+- Any public access point link found publicly is now a confirmed leak (the
+  URL is the credential). Private access points still need the token itself
+  to match for "confirmed". The "path is secret" switch is gone.
+- Response is always automatic (the per-stream choice is removed; migration
+  0005 sets existing streams to auto): the leak checker revokes exactly the
+  leaked token or access point, marks the incident confirmed and logs it.
+- On a GitHub issue/PR in an allowlisted repo (Settings -> Automatic GitHub
+  replies), it posts one public comment with the "Stream unavailable" image
+  (`/_sv/notice.png`, served by the gateway on the stream domain, so the
+  admin host never appears). Other repos: "Reply on GitHub" button on the
+  incident, with the comment shown in the confirm dialog. One reply per
+  issue/PR ever (`leak_replies`, unique source_url).
+- Confirm on an incident now revokes the leaked link; flash messages say what
+  actually happened.
+- Existing findings upgrade in place when they classify stronger; re-seeing
+  an already-recorded finding no longer opens a new, finding-less incident
+  after the previous one was dismissed or resolved.
+- Needs a classic GitHub token with `public_repo` to comment (fine-grained
+  tokens can only write to their own account's repos).
+
 ## 2026-09-26 -- Shared HLS unavailable slate and admin presentation
 
 - Added a lazy, shared FFmpeg slate with silent AAC, a rolling HLS window,

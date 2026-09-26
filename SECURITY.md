@@ -116,3 +116,16 @@ This is a personal single-operator project; there's no external disclosure
 process yet. If you're a future maintainer (human or AI) reading this:
 check ROADMAP.md before assuming any of the "not yet implemented" items
 above have since shipped -- update this file the moment they do.
+
+## Automatic leak response (2026-09-26)
+
+- A confirmed leak revokes only the specific leaked token or access point,
+  never the stream or other recipients' tokens. Anyone who can post the
+  link publicly can therefore get that link revoked -- intended: a public
+  link is compromised the moment it is posted.
+- Public comments go out automatically only for repos on the operator's
+  allowlist; elsewhere an operator must click. At most one comment per
+  issue/PR. The comment names no stream, path or token -- only that the
+  link was revoked -- and embeds an image from the stream domain.
+- GitHub API errors are reported by status code only; response bodies are
+  never logged or shown.

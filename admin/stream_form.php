@@ -25,7 +25,7 @@ $form = [
     'source_type' => $stream['source_type'] ?? 'hls',
     'source_url' => $stream['source_url'] ?? '',
     'source_username' => $stream['source_username'] ?? '',
-    'rotation_mode' => $stream['rotation_mode'] ?? 'manual_approval',
+    'rotation_mode' => 'auto',
     'replacement_reason' => $stream['replacement_reason'] ?? 'unauthorized_redistribution',
 ];
 
@@ -34,6 +34,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     foreach (array_keys($form) as $key) {
         $form[$key] = trim((string) ($_POST[$key] ?? ''));
     }
+    $form['rotation_mode'] = 'auto'; // no longer a user choice, see the help text
     $sourcePassword = (string) ($_POST['source_password'] ?? '');
 
     if ($form['name'] === '') {
@@ -141,13 +142,7 @@ require __DIR__ . '/includes/layout_top.php';
     <label>Source password <?= $stream && $stream['source_password_enc'] ? '(leave blank to keep the current one)' : '' ?></label>
     <input type="password" name="source_password" autocomplete="new-password">
 
-    <label>Rotation mode</label>
-    <select name="rotation_mode">
-      <option value="manual_approval" <?= $form['rotation_mode'] === 'manual_approval' ? 'selected' : '' ?>>Rotate after admin approval</option>
-      <option value="auto" <?= $form['rotation_mode'] === 'auto' ? 'selected' : '' ?>>Rotate automatically on confirmed leak</option>
-      <option value="monitor_only" <?= $form['rotation_mode'] === 'monitor_only' ? 'selected' : '' ?>>Monitor only, never auto-act</option>
-    </select>
-    <div class="sv-help">"auto" and "monitor_only" are recorded now but not yet acted on by anything -- the leak checker that would trigger a rotation isn't implemented yet (ROADMAP.md Phase 6-7).</div>
+    <div class="sv-help">Leak response is automatic: when the Leak Checker finds one of this stream's links posted publicly on GitHub, that link is revoked right away (players get the "Stream unavailable" screen) and the incident is logged.</div>
 
     <label>Replacement reason shown if revoked</label>
     <select name="replacement_reason">

@@ -123,8 +123,8 @@ func main() {
 	if sum.Err != nil {
 		log.Printf("leakchecker run finished with a note: %v", sum.Err)
 	}
-	log.Printf("leakchecker: checked %d access points, %d queries, %d new findings",
-		sum.StreamsChecked, sum.QueriesMade, sum.FindingsCreated)
+	log.Printf("leakchecker: checked %d access points, %d queries, %d new findings, %d auto-revoked, %d GitHub replies",
+		sum.StreamsChecked, sum.QueriesMade, sum.FindingsCreated, sum.AutoRevoked, sum.RepliesPosted)
 
 	if requestedValue != "" {
 		// Only clears the flag if it still holds the exact value seen at

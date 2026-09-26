@@ -19,12 +19,14 @@ func TestClassifyNoMatch(t *testing.T) {
 	}
 }
 
-func TestClassifyPublicMention(t *testing.T) {
+func TestClassifyPublicLinkIsConfirmedLeak(t *testing.T) {
+	// A public access point's URL is itself the credential, so any public
+	// sighting is a confirmed leak -- no "path is secret" opt-in needed.
 	ap := AccessPointInfo{ID: 1, StreamID: 1, PublicPath: "live/nova", Visibility: "public"}
 	text := "check out https://restream.example.com/live/nova it's great"
 	m := Classify(ap, "https://restream.example.com", text)
-	if m == nil || m.Confidence != Mention {
-		t.Fatalf("expected Mention, got %+v", m)
+	if m == nil || m.Confidence != Confirmed {
+		t.Fatalf("expected Confirmed, got %+v", m)
 	}
 }
 

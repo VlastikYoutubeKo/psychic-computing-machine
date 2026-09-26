@@ -7,8 +7,10 @@
 package gatewayhttp
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	_ "embed"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -118,6 +120,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	reqPath := strings.TrimPrefix(r.URL.Path, "/")
+	if reqPath == "_sv/notice.png" {
+		serveNotice(w, r)
+		return
+	}
 	if reqPath == "_sv" || strings.HasPrefix(reqPath, "_sv/") {
 		h.serveSlate(w, r)
 		return
@@ -649,4 +655,17 @@ func (h *Handler) serveSlate(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	http.ServeContent(w, r, parts[3], info.ModTime(), f)
+}
+
+// noticePNG is the image embedded in public GitHub replies (see
+// leakcheck.NoticeBody): a still of the "Stream unavailable" slate. It is
+// served from the stream domain so a public comment never names the admin.
+//
+//go:embed notice.png
+var noticePNG []byte
+
+func serveNotice(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	http.ServeContent(w, r, "notice.png", time.Time{}, bytes.NewReader(noticePNG))
 }

@@ -257,3 +257,42 @@ func BuildAnchorQuery(anchor string) string {
 func urlQueryEscape(s string) string {
 	return url.QueryEscape(s)
 }
+
+// PostIssueComment posts body as a comment on an issue or PR (GitHub
+// serves both through the issues comments endpoint) and returns the new
+// comment's html_url. Needs a token that can write issues on that repo:
+// a classic PAT with public_repo, since fine-grained tokens can only write
+// to repos their own account owns. Errors never include the response body.
+func (c *Client) PostIssueComment(ctx context.Context, owner, repo string, number int, body string) (string, error) {
+	payload, err := json.Marshal(map[string]string{"body": body})
+	if err != nil {
+		return "", err
+	}
+	path := fmt.Sprintf("/repos/%s/%s/issues/%d/comments", url.PathEscape(owner), url.PathEscape(repo), number)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+path, strings.NewReader(string(payload)))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "streamvault-leakchecker")
+	if c.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("leakcheck: posting comment to %s/%s#%d failed: network error", owner, repo, number)
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+	if resp.StatusCode != http.StatusCreated {
+		return "", fmt.Errorf("leakcheck: posting comment to %s/%s#%d returned status %d", owner, repo, number, resp.StatusCode)
+	}
+	var out struct {
+		HTMLURL string `json:"html_url"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return "", err
+	}
+	return out.HTMLURL, nil
+}

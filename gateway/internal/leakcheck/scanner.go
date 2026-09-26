@@ -185,7 +185,7 @@ func (sc *Scanner) recordIfMatch(ap AccessPointInfo, text, source, sourceURL str
 	if m == nil {
 		return true
 	}
-	created, err := sc.Store.RecordMatch(*m, source, sourceURL)
+	created, incidentID, err := sc.Store.RecordMatch(*m, source, sourceURL)
 	if err != nil {
 		log.Printf("leakcheck: recording finding for access point %d: %v", ap.ID, err)
 		return false
@@ -193,5 +193,51 @@ func (sc *Scanner) recordIfMatch(ap AccessPointInfo, text, source, sourceURL str
 	if created {
 		sum.FindingsCreated++
 	}
+	if incidentID != nil && m.Confidence == Confirmed {
+		if err := sc.respond(context.Background(), *m, *incidentID, source, sourceURL, sum); err != nil {
+			log.Printf("leakcheck: automatic response for incident %d: %v", *incidentID, err)
+			return false
+		}
+	}
 	return true
+}
+
+// respond implements the stream's rotation_mode for a Confirmed finding:
+// in "auto" mode revoke the leaked credential, and if the finding is a
+// GitHub issue/PR in an allowlisted repo, post the public notice once.
+// Manual-approval streams are left to the operator (incident page has the
+// same reply action behind a button).
+func (sc *Scanner) respond(ctx context.Context, m Match, incidentID int64, source, sourceURL string, sum *RunSummary) error {
+	mode, err := sc.Store.RotationMode(m.StreamID)
+	if err != nil || mode != "auto" {
+		return err
+	}
+	target, inactive, revokedNow, err := sc.Store.AutoRevoke(m, incidentID)
+	if err != nil {
+		return err
+	}
+	if revokedNow {
+		sum.AutoRevoked++
+		log.Printf("leakcheck: auto-revoked %s for incident %d", target, incidentID)
+	}
+	if !inactive || sc.GitHub == nil || !(strings.HasPrefix(source, "github_issue") || strings.HasPrefix(source, "github_pr")) {
+		return nil
+	}
+	owner, repo, number, ok := ParseIssueURL(sourceURL)
+	if !ok {
+		return nil
+	}
+	allow, err := sc.Store.ReplyAllowlist()
+	if err != nil || !allow[strings.ToLower(owner+"/"+repo)] {
+		return err
+	}
+	if done, err := sc.Store.HasReply(sourceURL); err != nil || done {
+		return err
+	}
+	commentURL, err := sc.GitHub.PostIssueComment(ctx, owner, repo, number, NoticeBody(sc.BaseURL))
+	if err != nil {
+		return err
+	}
+	sum.RepliesPosted++
+	return sc.Store.RecordReply(sourceURL, incidentID, commentURL, "leakchecker")
 }
