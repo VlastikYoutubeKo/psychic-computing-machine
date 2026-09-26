@@ -26,5 +26,14 @@ if (session_status() === PHP_SESSION_NONE) {
     $isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
         || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
     session_set_cookie_params(['httponly' => true, 'samesite' => 'Lax', 'secure' => $isHttps]);
+    // PHP's default session cache limiter ("nocache") sends
+    // Cache-Control: no-store on every response, including the login POST's
+    // response. Chromium (and Brave) silently refuse to offer to save a
+    // password when that response carries no-store -- the label/autocomplete
+    // fixes alone don't help. But no max-age either: "private_no_expire" sent
+    // max-age=10800, so browsers cached logged-out redirects (streams.php ->
+    // login.php -> index.php) for 3h. "no-cache" = store but always revalidate.
+    session_cache_limiter('');
     session_start();
+    header('Cache-Control: private, no-cache, must-revalidate');
 }
