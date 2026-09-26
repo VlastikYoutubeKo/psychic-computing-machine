@@ -9,8 +9,23 @@
 - Reserved `_sv` as a first public-path segment in the admin validator.
   Redesigned the server-rendered admin shell, responsive layouts, forms,
   tables, badges and login card without changing form names or auth logic.
-- Documented the 200-status monitoring tradeoff and the fact that the
-  optional temporary slate is not yet selected for upstream failures.
+- Documented the 200-status monitoring tradeoff.
+- Review fixes before deploy (verified by building the real Alpine image
+  and running the slate manager in it as UID 33):
+  - The Alpine font path was wrong (`/usr/share/fonts/dejavu/`, not
+    `ttf-dejavu/`), so every slate would have failed with "slate font
+    unavailable" in production.
+  - The lavfi inputs had no `-re`: ffmpeg generated video as fast as the CPU
+    allowed (360 segments, ~12 min of "live" video, in 8 s of wall time),
+    pinning a core and running the playlist far ahead of real time. Now
+    real-time at ~0% CPU.
+  - Upstream failures on a player entry request now get the shared
+    "temporarily unavailable" slate (browsers still get 502); before, that
+    variant existed and was publicly startable but never used.
+  - Failed or short-lived encoders back off 10 s before restarting, so a
+    broken ffmpeg can't be respawned on every public request.
+  - Slate frame redesigned to match the admin palette: accent bar, bold
+    title, muted subtitle, STREAMVAULT footer.
 
 ## 2026-09-26 -- Leak Checker timer installed (every 5 minutes)
 

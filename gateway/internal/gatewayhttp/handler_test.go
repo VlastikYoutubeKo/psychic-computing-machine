@@ -385,9 +385,12 @@ func TestRedirectToPrivateAddressIsNeverFetched(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusBadGateway || hits.Load() != 0 {
-		t.Fatalf("redirect to a private address: status=%d target hits=%d", resp.StatusCode, hits.Load())
+	// Players get the shared "temporarily unavailable" slate instead of a
+	// bare 502; what matters here is that the private target is never hit.
+	if hits.Load() != 0 || !strings.Contains(string(body), "/_sv/slate/temporarily-unavailable/") {
+		t.Fatalf("redirect to a private address: status=%d target hits=%d body=%q", resp.StatusCode, hits.Load(), body)
 	}
 }
 

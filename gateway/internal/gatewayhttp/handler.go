@@ -296,11 +296,19 @@ func (h *Handler) serveEntry(w http.ResponseWriter, r *http.Request, ap *store.A
 	resp, err := h.fetch(context.Background(), sourceEntry, ap.Stream, sourcePrivate, 0)
 	if err != nil {
 		log.Printf("fetching source for stream %d failed", ap.Stream.ID)
+		if wantsSlate(r) {
+			writeSlatePlaylist(w, r, slate.Temporary)
+			return
+		}
 		http.Error(w, "upstream unavailable", http.StatusBadGateway)
 		return
 	}
 	if resp.StatusCode >= 400 {
 		resp.Body.Close()
+		if wantsSlate(r) {
+			writeSlatePlaylist(w, r, slate.Temporary)
+			return
+		}
 		http.Error(w, "upstream error", http.StatusBadGateway)
 		return
 	}
@@ -568,13 +576,8 @@ var replacementReasons = map[string]string{
 }
 
 func (h *Handler) writeReplacement(w http.ResponseWriter, r *http.Request, s store.Stream, entry bool) {
-	if entry && !strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/html") {
-		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
-		w.Header().Set("Cache-Control", "no-store")
-		w.WriteHeader(http.StatusOK)
-		if r.Method != http.MethodHead {
-			_, _ = io.WriteString(w, "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-STREAM-INF:BANDWIDTH=180000,RESOLUTION=854x480\n/_sv/slate/unavailable/index.m3u8\n")
-		}
+	if entry && wantsSlate(r) {
+		writeSlatePlaylist(w, r, slate.Unavailable)
 		return
 	}
 	reason := replacementReasons[s.ReplacementReason]
@@ -598,6 +601,21 @@ func (h *Handler) writeReplacement(w http.ResponseWriter, r *http.Request, s sto
 <p><strong>Reason:</strong> %s</p>
 <p>The previous access URL has been permanently revoked.</p>
 </div></body></html>`, html.EscapeString(reason))
+}
+
+// wantsSlate: anything that isn't a browser asking for HTML is treated as a
+// player, which would just spin on a 4xx/5xx instead of showing a message.
+func wantsSlate(r *http.Request) bool {
+	return !strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/html")
+}
+
+func writeSlatePlaylist(w http.ResponseWriter, r *http.Request, variant string) {
+	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	if r.Method != http.MethodHead {
+		_, _ = io.WriteString(w, "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-STREAM-INF:BANDWIDTH=180000,RESOLUTION=854x480\n/_sv/slate/"+variant+"/index.m3u8\n")
+	}
 }
 
 func (h *Handler) serveSlate(w http.ResponseWriter, r *http.Request) {

@@ -215,9 +215,13 @@ video at 5 fps and silent AAC audio feed a six-segment rolling HLS window.
 The process is shared across viewers and stopped after 90 seconds without
 playlist or segment requests. Shutdown cancels the process and removes its
 temporary directory. The same fixed message is used for every stream and
-viewer; stream-specific reasons remain on the HTML page only. The gateway
-currently selects only the `unavailable` variant; a second temporary
-variant is available for future upstream-failure routing.
+viewer; stream-specific reasons remain on the HTML page only. When the
+source itself fails on an entry request (fetch error or upstream 4xx/5xx,
+including a blocked redirect), players get the `temporarily-unavailable`
+variant the same way; browsers still get 502. Inputs run with `-re` so the
+encoder produces video in real time (~0% CPU) rather than as fast as the CPU
+allows, and an encoder that fails or dies within 30 s is not restarted for
+10 s, so public requests can't respawn a broken ffmpeg in a loop.
 
 This is intentionally a public error stream. A monitor that infers
 revocation from HTTP 410 on player-like entry requests will now see 200

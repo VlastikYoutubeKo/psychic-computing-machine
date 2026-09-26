@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRouteNames(t *testing.T) {
@@ -73,5 +74,12 @@ func TestManagerRendersOneSharedHLSStream(t *testing.T) {
 	m.Close()
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Fatalf("slate temp dir not cleaned: %v", err)
+	}
+}
+
+func TestRestartBackoffAfterFailedStart(t *testing.T) {
+	m := &Manager{sessions: make(map[string]*session), failedAt: map[string]time.Time{Unavailable: time.Now()}, closed: make(chan struct{})}
+	if _, err := m.GetPath(Unavailable, "index.m3u8"); err == nil || !strings.Contains(err.Error(), "backing off") {
+		t.Fatalf("expected backoff error, got %v", err)
 	}
 }

@@ -38,9 +38,9 @@ function sv_validate_public_path(string $path): ?string
         if (strcasecmp($seg, SV_RESERVED_SEGMENT) === 0) {
             return 'The path segment "' . SV_RESERVED_SEGMENT . '" is reserved by the gateway and cannot be used.';
         }
-		if ($index === 0 && $seg === SV_RESERVED_ROOT_SEGMENT) {
-			return 'The path segment "' . SV_RESERVED_ROOT_SEGMENT . '" is reserved by the gateway and cannot be used.';
-		}
+        if ($index === 0 && $seg === SV_RESERVED_ROOT_SEGMENT) {
+            return 'The path segment "' . SV_RESERVED_ROOT_SEGMENT . '" is reserved by the gateway and cannot be used.';
+        }
     }
     return null;
 }

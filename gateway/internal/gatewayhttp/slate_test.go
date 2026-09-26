@@ -1,6 +1,7 @@
 package gatewayhttp
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -122,5 +123,27 @@ func TestDisabledAndExpiredEntriesSelectUnavailableSlate(t *testing.T) {
 	}
 	if got := slateRequest(t, h, "GET", "/live/expired/expired-token.m3u8", "application/vnd.apple.mpegurl"); got.Code != 200 || !strings.Contains(got.Body.String(), "/_sv/slate/unavailable/") {
 		t.Fatalf("expired token: %d %s", got.Code, got.Body.String())
+	}
+}
+
+func TestUpstreamFailureSelectsTemporarySlateForPlayersOnly(t *testing.T) {
+	h, db := newTestHandler(t)
+	f := installFakeSlate(t, h)
+	src := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "down", http.StatusInternalServerError)
+	}))
+	defer src.Close()
+	seedStream(t, db, src.URL+"/index.m3u8", "live/down", "public")
+
+	player := slateRequest(t, h, "GET", "/live/down.m3u8", "*/*")
+	if player.Code != 200 || !strings.Contains(player.Body.String(), "/_sv/slate/temporarily-unavailable/index.m3u8") {
+		t.Fatalf("player on upstream failure: %d %s", player.Code, player.Body.String())
+	}
+	browser := slateRequest(t, h, "GET", "/live/down.m3u8", "text/html")
+	if browser.Code != http.StatusBadGateway {
+		t.Fatalf("browser on upstream failure: %d", browser.Code)
+	}
+	if f.calls != 0 {
+		t.Fatal("entry response must not touch the slate encoder")
 	}
 }

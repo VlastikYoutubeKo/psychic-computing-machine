@@ -19,6 +19,10 @@ const (
 	Unavailable = "unavailable"
 	Temporary   = "temporarily-unavailable"
 	idleTime    = 90 * time.Second
+	// After a failed or short-lived encoder, refuse restarts for a while so
+	// a broken ffmpeg/font can't be respawned on every public request.
+	restartBackoff = 10 * time.Second
+	shortLived     = 30 * time.Second
 )
 
 // FFmpeg starts at six digits and grows the counter after long runtimes.
@@ -35,6 +39,7 @@ type Provider interface {
 }
 
 type session struct {
+	started  time.Time
 	dir      string
 	cancel   context.CancelFunc
 	done     chan struct{}
@@ -44,12 +49,13 @@ type session struct {
 type Manager struct {
 	mu       sync.Mutex
 	sessions map[string]*session
+	failedAt map[string]time.Time
 	closed   chan struct{}
 	stopped  bool
 }
 
 func NewManager() *Manager {
-	m := &Manager{sessions: make(map[string]*session), closed: make(chan struct{})}
+	m := &Manager{sessions: make(map[string]*session), failedAt: make(map[string]time.Time), closed: make(chan struct{})}
 	go func() {
 		tick := time.NewTicker(30 * time.Second)
 		defer tick.Stop()
@@ -78,6 +84,9 @@ func (m *Manager) GetPath(variant, name string) (string, error) {
 	if s != nil {
 		select {
 		case <-s.done:
+			if time.Since(s.started) < shortLived {
+				m.failedAt[variant] = time.Now()
+			}
 			delete(m.sessions, variant)
 			_ = os.RemoveAll(s.dir)
 			s = nil
@@ -85,9 +94,14 @@ func (m *Manager) GetPath(variant, name string) (string, error) {
 		}
 	}
 	if s == nil {
+		if t, ok := m.failedAt[variant]; ok && time.Since(t) < restartBackoff {
+			m.mu.Unlock()
+			return "", errors.New("slate encoder failed recently; backing off")
+		}
 		var err error
 		s, err = m.startLocked(variant)
 		if err != nil {
+			m.failedAt[variant] = time.Now()
 			m.mu.Unlock()
 			return "", err
 		}
@@ -123,35 +137,48 @@ func (m *Manager) startLocked(variant string) (*session, error) {
 	if err != nil {
 		return nil, err
 	}
-	message := "Stream unavailable.\nThis access URL has been revoked."
+	// Colours match admin/assets/style.css (--bg, --text, --muted, --faint,
+	// --bad / --warn) so the slate looks like the rest of StreamVault.
+	title, subtitle, accent := "Stream unavailable", "This access URL has been revoked.", "0xff8899"
 	if variant == Temporary {
-		message = "Stream temporarily unavailable.\nPlease try again shortly."
+		title, subtitle, accent = "Temporarily unavailable", "The source is not responding. Please try again shortly.", "0xffd17a"
 	}
-	textfile := filepath.Join(dir, "message.txt")
-	if err := os.WriteFile(textfile, []byte(message), 0600); err != nil {
+	titleFile, subFile := filepath.Join(dir, "title.txt"), filepath.Join(dir, "subtitle.txt")
+	if err := os.WriteFile(titleFile, []byte(title), 0600); err != nil {
+		os.RemoveAll(dir)
+		return nil, err
+	}
+	if err := os.WriteFile(subFile, []byte(subtitle), 0600); err != nil {
 		os.RemoveAll(dir)
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	font := ""
+	fontDir := ""
 	for _, candidate := range []string{
-		"/usr/share/fonts/ttf-dejavu/DejaVuSans.ttf",      // Alpine image
-		"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", // Debian development host
+		"/usr/share/fonts/dejavu",          // Alpine image (font-dejavu)
+		"/usr/share/fonts/truetype/dejavu", // Debian development host
 	} {
-		if _, err := os.Stat(candidate); err == nil {
-			font = candidate
+		if _, err := os.Stat(filepath.Join(candidate, "DejaVuSans-Bold.ttf")); err == nil {
+			fontDir = candidate
 			break
 		}
 	}
-	if font == "" {
+	if fontDir == "" {
 		cancel()
 		os.RemoveAll(dir)
 		return nil, errors.New("slate font unavailable")
 	}
-	filter := fmt.Sprintf("drawtext=fontfile=%s:textfile=%s:fontcolor=white:fontsize=28:line_spacing=12:x=(w-text_w)/2:y=(h-text_h)/2", font, textfile)
+	regular, bold := filepath.Join(fontDir, "DejaVuSans.ttf"), filepath.Join(fontDir, "DejaVuSans-Bold.ttf")
+	filter := fmt.Sprintf("drawbox=x=(iw-72)/2:y=ih/2-96:w=72:h=5:color=%s:t=fill,"+
+		"drawtext=fontfile=%s:textfile=%s:fontcolor=0xedf3ff:fontsize=46:x=(w-text_w)/2:y=h/2-64,"+
+		"drawtext=fontfile=%s:textfile=%s:fontcolor=0xa8b7d0:fontsize=24:x=(w-text_w)/2:y=h/2+10,"+
+		"drawtext=fontfile=%s:text=STREAMVAULT:fontcolor=0x8192ae:fontsize=16:x=(w-text_w)/2:y=h-56",
+		accent, bold, titleFile, regular, subFile, bold)
 	cmd := exec.CommandContext(ctx, "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
-		"-f", "lavfi", "-i", "color=c=0x101827:s=854x480:r=5",
-		"-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
+		// -re on both synthetic inputs: without it lavfi generates as fast as
+		// the CPU allows (a full core, and a "live" playlist minutes ahead).
+		"-re", "-f", "lavfi", "-i", "color=c=0x090e19:s=854x480:r=5",
+		"-re", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
 		"-vf", filter, "-map", "0:v:0", "-map", "1:a:0",
 		"-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
 		"-crf", "32", "-pix_fmt", "yuv420p", "-r", "5", "-g", "10", "-keyint_min", "10", "-sc_threshold", "0",
@@ -165,7 +192,7 @@ func (m *Manager) startLocked(variant string) (*session, error) {
 		os.RemoveAll(dir)
 		return nil, fmt.Errorf("starting slate ffmpeg: %w", err)
 	}
-	s := &session{dir: dir, cancel: cancel, done: make(chan struct{}), lastUsed: time.Now()}
+	s := &session{started: time.Now(), dir: dir, cancel: cancel, done: make(chan struct{}), lastUsed: time.Now()}
 	go func() { _ = cmd.Wait(); close(s.done) }()
 	return s, nil
 }
