@@ -56,7 +56,8 @@ func (s *Store) AutoRevoke(m Match, incidentID int64) (target string, inactive, 
 				revoked_reason = 'leak_detected' WHERE id = ? AND revoked_at IS NULL`, *m.TokenID)
 	} else {
 		target = fmt.Sprintf("access_point:%d", m.AccessPointID)
-		res, err = tx.Exec(`UPDATE access_points SET status = 'revoked' WHERE id = ? AND status = 'active'`, m.AccessPointID)
+		res, err = tx.Exec(`UPDATE access_points SET status = 'revoked',
+				revoked_at = COALESCE(revoked_at, strftime('%Y-%m-%dT%H:%M:%fZ','now')) WHERE id = ? AND status = 'active'`, m.AccessPointID)
 	}
 	if err != nil {
 		return target, false, false, err

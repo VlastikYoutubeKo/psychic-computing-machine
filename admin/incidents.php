@@ -128,7 +128,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $f->execute([$id]);
                     $apId = $f->fetchColumn();
                     if ($apId) {
-                        $r = $db->prepare("UPDATE access_points SET status = 'revoked' WHERE id = ? AND status = 'active'");
+                        $r = $db->prepare("UPDATE access_points SET status = 'revoked', revoked_at = COALESCE(revoked_at, strftime('%Y-%m-%dT%H:%M:%fZ','now')) WHERE id = ? AND status = 'active'");
                         $r->execute([$apId]);
                         $revoked = $r->rowCount() ? 'access_point:' . $apId : null;
                     }

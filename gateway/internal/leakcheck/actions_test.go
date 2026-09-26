@@ -92,6 +92,11 @@ func TestAutoModeRevokesSecretPathAndRepliesOnceInAllowlistedRepo(t *testing.T) 
 	if apStatus != "revoked" || incStatus != "confirmed" {
 		t.Fatalf("ap=%s incident=%s", apStatus, incStatus)
 	}
+	var revokedAt sql.NullString
+	db.QueryRow(`SELECT revoked_at FROM access_points WHERE id = ?`, apID).Scan(&revokedAt)
+	if !revokedAt.Valid {
+		t.Fatal("auto-revoke must record access_points.revoked_at so the slate can show the cut-off time")
+	}
 	if !strings.Contains(actions, "auto_revoked") || !strings.Contains(actions, "github_reply") {
 		t.Fatalf("actions log missing entries: %s", actions)
 	}

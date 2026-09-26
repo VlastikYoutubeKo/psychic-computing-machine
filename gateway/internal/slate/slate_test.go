@@ -104,7 +104,13 @@ func TestPersonalKeyCapAndValidation(t *testing.T) {
 			t.Fatalf("accepted key %q", bad)
 		}
 	}
-	if _, err := m.GetPath(Unavailable, first[:39]+"0", "index.m3u8"); !os.IsNotExist(err) {
+	// Flip the last hex digit to a *different* one: the key is random, so a
+	// fixed replacement like "0" equals the real digit 1 run in 16.
+	flip := "0"
+	if first[39] == '0' {
+		flip = "1"
+	}
+	if _, err := m.GetPath(Unavailable, first[:39]+flip, "index.m3u8"); !os.IsNotExist(err) {
 		t.Fatalf("tampered key: %v", err)
 	}
 	if _, err := m.GetPath(Temporary, first, "index.m3u8"); !os.IsNotExist(err) {
