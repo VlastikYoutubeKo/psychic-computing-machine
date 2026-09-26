@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-09-26 -- Leak Checker timer installed (every 5 minutes)
+
+The Leak Checker had only ever run when started by hand, so "Scan now"
+requests from the admin UI sat queued forever (e.g. one queued at
+11:39Z never ran). Installed `deploy/systemd/streamvault-leakchecker.{service,timer}`
+into /etc/systemd/system and enabled the timer. The cadence was changed from
+1 to 5 minutes at the owner's request: a check every 5 minutes, a real
+GitHub scan only on a pending "Scan now" or every `minScanInterval`
+(20 min), so detection is automatic and a manual request lands within ~5 min.
+
 ## 2026-09-25 (yet even later) -- Fixed a double-fetch that triggered the source's own rate limiting
 
 After the SSRF redirect fix below, `rest.iptvlookup.com/metvtoons.m3u8`

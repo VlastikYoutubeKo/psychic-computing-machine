@@ -338,7 +338,8 @@ consistent with the rest of this project's stance on this
 memory-constrained host (see "Why a separate Go gateway" above), a
 process that only exists while it's actually doing work beats one sitting
 idle in memory between scans. `cmd/leakchecker` is designed to be invoked
-every minute by a timer (not deployed yet), but only
+every 5 minutes by `deploy/systemd/streamvault-leakchecker.timer`
+(installed 2026-09-26), but only
 performs a real scan when either a manual "Scan now" request is pending
 (`settings.leak_scan_requested_at`, written by `admin/settings.php`) or
 `minScanInterval` (20 minutes by default) has elapsed since the last run;

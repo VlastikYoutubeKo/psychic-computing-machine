@@ -4,8 +4,8 @@
 
 The live Compose file and Caddyfile now contain the StreamVault admin
 integration and gateway service. The stream-facing Caddy cutover has not
-been applied. The GitHub checker timer below is prepared in this repo but
-has not been installed or enabled. Production service changes remain gated
+been applied. The GitHub checker timer below is installed and enabled on
+this host (since 2026-09-26). Other production service changes remain gated
 on the owner's approval.
 
 ## Native Debian install (this host)
@@ -146,7 +146,7 @@ siblings on disk the way `admin/includes/config.php` assumes
 (`SV_ROOT = dirname(admin dir)`). The gateway container only gets
 `./streamvault/data`, since its binary is already built into the image.
 
-## GitHub Leak Checker timer (prepared, not installed)
+## GitHub Leak Checker timer (installed 2026-09-26)
 
 `gateway/Dockerfile` now builds both `streamvault-gateway` and
 `streamvault-leakchecker` into the same image. The proposed
@@ -158,8 +158,9 @@ the checker itself runs as UID 33 inside the container. The GitHub PAT
 stays encrypted in SQLite and is never placed in a unit file or command
 line.
 
-`deploy/systemd/streamvault-leakchecker.timer` starts a check about one
-minute after boot and one minute after each invocation finishes. Each
+`deploy/systemd/streamvault-leakchecker.timer` starts a check about two
+minutes after boot and five minutes after each invocation finishes, so a
+"Scan now" request is picked up within ~5 minutes. Each
 invocation first checks SQLite: it scans only when a manual request is
 pending or 20 minutes have passed since the last run. Long scans therefore
 do not overlap; the database lock remains a second safeguard. A manual

@@ -2,7 +2,7 @@
 // stream's public_path against GitHub code and issue search, record what's
 // found, and exit.
 //
-// Meant to be invoked frequently (e.g. every minute) by a systemd timer or
+// Meant to be invoked frequently (every 5 minutes in deploy/systemd) by a timer or
 // cron -- see DEPLOYMENT.md -- but it only actually performs a scan when
 // either a manual "Scan now" request is pending or minScanInterval has
 // elapsed since the last run; otherwise it's a fast, near-free no-op. This
@@ -55,7 +55,7 @@ func main() {
 	}
 
 	// A scan can take up to the context timeout below (10 min) while the
-	// timer fires every minute; without this, a manual "Scan now" request
+	// timer fires every few minutes; without this, a manual "Scan now" request
 	// landing mid-scan would start a second, overlapping run. See
 	// migrations/0003_leak_checker_lock.sql.
 	locked, err := store.AcquireLock()

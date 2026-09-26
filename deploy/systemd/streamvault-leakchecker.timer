@@ -1,9 +1,9 @@
 [Unit]
-Description=Check StreamVault scan queue every minute
+Description=Check StreamVault scan queue every 5 minutes
 
 [Timer]
-OnBootSec=1min
-OnUnitInactiveSec=1min
+OnBootSec=2min
+OnUnitInactiveSec=5min
 AccuracySec=5s
 Unit=streamvault-leakchecker.service
 

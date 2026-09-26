@@ -112,7 +112,7 @@ func (s *Store) LastRunStartedAt() (time.Time, bool, error) {
 
 // ShouldRun decides whether this invocation should actually perform a scan:
 // yes if a manual request is pending, or if minInterval has elapsed since
-// the last run. A timer firing every minute (needed for "Scan now" to feel
+// the last run. A timer firing every few minutes (needed for "Scan now" to feel
 // responsive) would otherwise burn through GitHub's search rate limit by
 // doing a full scan every single minute -- caught in review before this
 // was wired to any scheduler.
