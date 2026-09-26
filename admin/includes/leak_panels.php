@@ -9,7 +9,7 @@ sv_render_leak_status($db);
 
 <div class="sv-panel">
   <h2 style="margin-top:0;">Request a scan</h2>
-  <p class="sv-help">The checker is a separate one-shot process. This queues a request for its once-per-minute timer; it does not run a command inside the web container. Check the run status above to see when it actually starts and whether it succeeds.</p>
+  <p class="sv-help">The checker is a separate one-shot process. This queues a request; the timer checks every 5 minutes, so a scan starts within about 5 minutes; it does not run a command inside the web container. Check the run status above to see when it actually starts and whether it succeeds.</p>
   <form action="settings.php" method="post">
     <?= sv_csrf_field() ?>
     <input type="hidden" name="action" value="request_leak_scan">
@@ -19,7 +19,7 @@ sv_render_leak_status($db);
 
 <div class="sv-panel">
   <h2 style="margin-top:0;">Automatic GitHub replies</h2>
-  <p class="sv-help">When a stream is set to "Revoke automatically on confirmed leak", the checker revokes the leaked link and, only for issues/PRs in these repositories, posts a public comment with the "Stream unavailable" image. Everywhere else, reply from the incident page after reviewing. The GitHub token needs the <code>public_repo</code> scope (classic token) to comment.</p>
+  <p class="sv-help">When the checker finds a link, it revokes it automatically and, only for issues/PRs in these repositories, posts a public comment with the "Stream unavailable" image. Everywhere else, reply from the incident page after reviewing. The GitHub token needs the <code>public_repo</code> scope (classic token) to comment.</p>
   <form action="settings.php" method="post">
     <?= sv_csrf_field() ?>
     <input type="hidden" name="action" value="save_reply_allowlist">

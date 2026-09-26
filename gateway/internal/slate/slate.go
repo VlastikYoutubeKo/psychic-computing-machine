@@ -30,6 +30,9 @@ const (
 	restartBackoff = 10 * time.Second
 	shortLived     = 30 * time.Second
 	maxPersonal    = 3
+	// Each 1080p slate ffmpeg is ~130 MiB RSS and ~9% of a core; this host
+	// also runs MariaDB under a 5G cgroup cap, so keep the worst case ~530 MiB.
+	maxProcesses = 4
 )
 
 var segmentName = regexp.MustCompile(`^seg[0-9]{6,9}\.ts$`)
@@ -226,7 +229,7 @@ func (m *Manager) GetPath(variant, key, name string) (string, error) {
 			m.mu.Unlock()
 			return "", errors.New("slate encoder backing off")
 		}
-		if len(m.sessions) >= 6 {
+		if len(m.sessions) >= maxProcesses {
 			base, _, _ := splitVariant(variant)
 			for target, candidate := range m.sessions {
 				cbase, _, _ := splitVariant(strings.SplitN(target, "/", 2)[0])

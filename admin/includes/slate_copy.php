@@ -87,6 +87,8 @@ function sv_ai_generate(PDO $db, int $operatorId, string $reason, string $langua
     $body = json_decode($response, true);
     $content = $body['choices'][0]['message']['content'] ?? null;
     if (!is_string($content)) return ['error' => 'OpenRouter returned an unexpected response.'];
+    // Many models wrap JSON in a ```json fence despite instructions; strip it.
+    $content = preg_replace('/^\s*```(?:json)?\s*|\s*```\s*$/i', '', $content) ?? $content;
     $suggestion = json_decode($content, true);
     if (!is_array($suggestion) || count($suggestion) !== 2 || !isset($suggestion['title'], $suggestion['subtitle']) || !is_string($suggestion['title']) || !is_string($suggestion['subtitle'])) return ['error' => 'AI response was not valid title/subtitle JSON.'];
     $copy = sv_slate_copy_valid($suggestion['title'], $suggestion['subtitle']);
