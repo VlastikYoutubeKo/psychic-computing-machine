@@ -1,6 +1,7 @@
 package gatewayhttp
 
 import (
+	"bytes"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -264,5 +265,42 @@ func TestColdSourceEntryIsRetriedOnceAfterHeaderTimeout(t *testing.T) {
 	}
 	if hits.Load() != 2 {
 		t.Fatalf("expected exactly one retry (2 source hits), got %d", hits.Load())
+	}
+}
+
+func TestMPEGTSRemuxRefusedForOwnerWithoutPermission(t *testing.T) {
+	oldMin := finiteSlateMinSegments
+	finiteSlateMinSegments = 1
+	defer func() { finiteSlateMinSegments = oldMin }()
+
+	h, db := newTestHandler(t)
+	f := installFakeSlate(t, h)
+	ts := bytes.Repeat(append([]byte{0x47}, make([]byte, 187)...), 20) // MPEG-TS sync bytes
+	src := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "video/mp2t")
+		w.Write(ts)
+	}))
+	defer src.Close()
+	res, err := db.Exec(`INSERT INTO operators (username, password_hash, role, status, allow_remux) VALUES ('u', 'x', 'user', 'active', 0)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, _ := res.LastInsertId()
+	apID := seedStream(t, db, src.URL+"/live.ts", "live/ts", "public")
+	if _, err := db.Exec(`UPDATE streams SET owner_id = ? WHERE id = (SELECT stream_id FROM access_points WHERE id = ?)`, owner, apID); err != nil {
+		t.Fatal(err)
+	}
+
+	got := slateRequest(t, h, "GET", "/live/ts.m3u8", "*/*")
+	if got.Code != 200 || !strings.Contains(got.Body.String(), "#EXT-X-ENDLIST") || !strings.Contains(got.Body.String(), "temporarily_unavailable") {
+		t.Fatalf("remux must be refused with the temporary slate, got %d %s", got.Code, got.Body.String())
+	}
+	if f.calls != 1 {
+		t.Fatalf("expected the shared temporary slate to be read once, got %d", f.calls)
+	}
+	// Had a remux session started, the entry would have returned a remux
+	// playlist (sv-remux blobs) instead of the finite temporary slate.
+	if strings.Contains(got.Body.String(), "/live/ts/r/") {
+		t.Fatal("remux playlist served for an owner without allow_remux")
 	}
 }

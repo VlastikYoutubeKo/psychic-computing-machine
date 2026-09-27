@@ -35,8 +35,9 @@ if (strlen($password) < 12) {
 
 $hash = password_hash($password, PASSWORD_DEFAULT);
 $pdo = sv_db();
-$stmt = $pdo->prepare('INSERT INTO operators (username, password_hash) VALUES (?, ?)
-    ON CONFLICT(username) DO UPDATE SET password_hash = excluded.password_hash');
+$stmt = $pdo->prepare("INSERT INTO operators (username, password_hash, role, status) VALUES (?, ?, 'admin', 'active')
+    ON CONFLICT(username) DO UPDATE SET password_hash = excluded.password_hash, role = 'admin', status = 'active', invite_token_hash = NULL, invite_expires_at = NULL");
 $stmt->execute([$username, $hash]);
+$pdo->prepare('UPDATE streams SET owner_id = ? WHERE owner_id IS NULL')->execute([(int) $pdo->query('SELECT id FROM operators ORDER BY id LIMIT 1')->fetchColumn()]);
 
 fwrite(STDOUT, "Operator '$username' created/updated.\n");

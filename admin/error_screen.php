@@ -4,7 +4,7 @@ require_once __DIR__ . '/includes/auth.php';
 require_once __DIR__ . '/includes/csrf.php';
 require_once __DIR__ . '/includes/secret_box.php';
 require_once __DIR__ . '/includes/slate_copy.php';
-$operator = sv_require_login();
+$operator = sv_require_admin();
 $db = sv_db();
 $suggestion = null;
 $suggestionReason = '';

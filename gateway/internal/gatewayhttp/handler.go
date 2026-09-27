@@ -214,6 +214,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if target.Scheme == "sv-remux" {
+		if !ap.Stream.AllowRemux {
+			h.writeTemporaryFailure(w, r)
+			return
+		}
 		h.serveRemuxResource(w, r, ap, target)
 		return
 	}
@@ -305,6 +309,11 @@ func sourceSignature(s store.Stream) string {
 // leans on elsewhere (see SECURITY.md) -- so this is judged an acceptable
 // risk rather than one worth a bespoke read-deadline mechanism right now.
 func (h *Handler) serveEntry(w http.ResponseWriter, r *http.Request, ap *store.AccessPoint, sourceEntry *url.URL, prefix string) {
+	if !ap.Stream.AllowRemux && h.Remux.Existing(ap.Stream.ID, sourceSignature(ap.Stream)) != nil {
+		log.Printf("remux refused for stream %d: owner lacks permission", ap.Stream.ID)
+		h.writeTemporaryFailure(w, r)
+		return
+	}
 	if s := h.Remux.Existing(ap.Stream.ID, sourceSignature(ap.Stream)); s != nil {
 		h.writeRemuxPlaylist(w, ap, s, prefix)
 		return
@@ -327,7 +336,7 @@ func (h *Handler) serveEntry(w http.ResponseWriter, r *http.Request, ap *store.A
 		h.writeTemporaryFailure(w, r)
 		return
 	}
-	if !h.sniffAndServe(w, resp, resp.Request.URL, prefix, ap, true) {
+	if !h.sniffAndServe(w, r, resp, resp.Request.URL, prefix, ap, true) {
 		resp.Body.Close()
 	}
 	// else: ownership of resp.Body was transferred to a remux session
@@ -348,7 +357,7 @@ func (h *Handler) serveResource(w http.ResponseWriter, r *http.Request, ap *stor
 		http.Error(w, "upstream error", http.StatusBadGateway)
 		return
 	}
-	h.sniffAndServe(w, resp, resp.Request.URL, prefix, ap, false)
+	h.sniffAndServe(w, r, resp, resp.Request.URL, prefix, ap, false)
 }
 
 // fetch builds a per-call client so CheckRedirect can enforce
@@ -422,7 +431,7 @@ const (
 // background remux session (the caller must then not close it) -- see
 // serveEntry's doc comment for why the response is reused rather than
 // re-fetched.
-func (h *Handler) sniffAndServe(w http.ResponseWriter, resp *http.Response, manifestURL *url.URL, prefix string, ap *store.AccessPoint, entry bool) bool {
+func (h *Handler) sniffAndServe(w http.ResponseWriter, r *http.Request, resp *http.Response, manifestURL *url.URL, prefix string, ap *store.AccessPoint, entry bool) bool {
 	head := make([]byte, sniffLimit)
 	n, err := io.ReadFull(resp.Body, head)
 	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
@@ -431,6 +440,11 @@ func (h *Handler) sniffAndServe(w http.ResponseWriter, resp *http.Response, mani
 	}
 	head = head[:n]
 	if entry && remux.LooksLikeMPEGTS(head) {
+		if !ap.Stream.AllowRemux {
+			log.Printf("remux refused for stream %d: owner lacks permission", ap.Stream.ID)
+			h.writeTemporaryFailure(w, r)
+			return false
+		}
 		body := &prefixedReadCloser{prefix: head, r: resp.Body, closer: resp.Body}
 		h.serveRemuxEntry(w, ap, body, prefix)
 		return true

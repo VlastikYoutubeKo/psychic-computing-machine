@@ -2,17 +2,24 @@
 declare(strict_types=1);
 
 /** @return array{latest: ?array, last_success: ?array, requested_at: ?string} */
-function sv_leak_status(PDO $db): array
+function sv_leak_status(PDO $db, ?array $operator = null): array
 {
-    $latest = $db->query('SELECT * FROM leak_checker_runs ORDER BY id DESC LIMIT 1')->fetch() ?: null;
-    $lastSuccess = $db->query('SELECT * FROM leak_checker_runs WHERE finished_at IS NOT NULL AND error IS NULL ORDER BY id DESC LIMIT 1')->fetch() ?: null;
-    $requested = $db->query("SELECT value FROM settings WHERE key = 'leak_scan_requested_at'")->fetchColumn();
+    $owner = $operator && $operator['role'] === 'user' ? (int) $operator['id'] : null;
+    $where = $owner === null ? 'owner_id IS NULL' : 'owner_id = ?';
+    $latestStmt = $db->prepare("SELECT * FROM leak_checker_runs WHERE $where ORDER BY id DESC LIMIT 1");
+    $successStmt = $db->prepare("SELECT * FROM leak_checker_runs WHERE $where AND finished_at IS NOT NULL AND error IS NULL ORDER BY id DESC LIMIT 1");
+    $latestStmt->execute($owner === null ? [] : [$owner]);
+    $successStmt->execute($owner === null ? [] : [$owner]);
+    $latest = $latestStmt->fetch() ?: null;
+    $lastSuccess = $successStmt->fetch() ?: null;
+    if ($owner === null) $requested = $db->query("SELECT value FROM settings WHERE key = 'leak_scan_requested_at'")->fetchColumn();
+    else { $stmt = $db->prepare('SELECT leak_scan_requested_at FROM operators WHERE id=?'); $stmt->execute([$owner]); $requested = $stmt->fetchColumn(); }
     return ['latest' => $latest, 'last_success' => $lastSuccess, 'requested_at' => $requested ?: null];
 }
 
-function sv_render_leak_status(PDO $db): void
+function sv_render_leak_status(PDO $db, ?array $operator = null): void
 {
-    $status = sv_leak_status($db);
+    $status = sv_leak_status($db, $operator);
     $latest = $status['latest'];
     $success = $status['last_success'];
     $requested = $status['requested_at'];
@@ -21,7 +28,7 @@ function sv_render_leak_status(PDO $db): void
     $providers = is_array($providers) ? array_filter($providers, 'is_string') : [];
     ?>
     <div class="sv-panel">
-      <strong>Leak Checker coverage</strong>
+      <strong><?= $operator && $operator['role'] === 'user' ? 'Your GitHub token coverage' : 'Global Leak Checker coverage' ?></strong>
       <p class="sv-help">Only GitHub scanning is supported in this phase. GitLab and public playlist scanning are not implemented. No scan proves that a stream is safe.</p>
       <p class="sv-help">Configured stream base URL: <?= $baseUrl ? h($baseUrl) : 'not configured — no search anchors can be built' ?>.</p>
       <?php if (!$latest): ?>

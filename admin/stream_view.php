@@ -6,12 +6,9 @@ $operator = sv_require_login();
 $db = sv_db();
 
 $id = (int) ($_GET['id'] ?? 0);
-$stmt = $db->prepare('SELECT * FROM streams WHERE id = ?');
-$stmt->execute([$id]);
-$stream = $stmt->fetch();
+$stream = sv_stream_for_operator($db, $operator, $id);
 if (!$stream) {
-    sv_flash('err', 'Stream not found.');
-    sv_redirect('streams.php');
+    http_response_code(404); exit('Stream not found.');
 }
 $streamIncidentsStmt = $db->prepare("SELECT id, source, status, detected_at FROM incidents WHERE stream_id = ? ORDER BY detected_at DESC LIMIT 20");
 $streamIncidentsStmt->execute([$id]);
@@ -47,15 +44,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($err) {
             sv_flash('err', $err);
         } else {
+            if (!sv_is_admin($operator)) {
+                $count = $db->prepare('SELECT COUNT(*) FROM access_points ap JOIN streams s ON s.id=ap.stream_id WHERE s.owner_id=?');
+                $count->execute([$operator['id']]);
+                if ((int) $count->fetchColumn() >= (int) $operator['max_access_points']) {
+                    sv_flash('err', 'Access point limit reached.'); sv_redirect("stream_view.php?id=$id");
+                }
+            }
             try {
                 $db->prepare('INSERT INTO access_points (stream_id, public_path, visibility, path_is_secret) VALUES (?, ?, ?, ?)')
                     ->execute([$id, $path, $visibility, $pathIsSecret]);
                 sv_audit('access_point_created', "stream:$id", ['public_path' => $path, 'visibility' => $visibility, 'path_is_secret' => $pathIsSecret]);
                 sv_flash('ok', "Access point \"$path\" created.");
             } catch (PDOException $e) {
-                sv_flash('err', str_contains($e->getMessage(), 'UNIQUE')
-                    ? "The path \"$path\" is already in use by another access point."
-                    : 'Could not create access point: ' . $e->getMessage());
+                sv_flash('err', 'Path unavailable or access point limit reached.');
             }
         }
         sv_redirect("stream_view.php?id=$id");
@@ -134,7 +136,7 @@ require __DIR__ . '/includes/layout_top.php';
 
 <?php if (!$baseUrl): ?>
   <div class="sv-flash err">
-    No public base URL configured yet -- <a href="settings.php">set one in Settings</a> so the URLs below are shown
+    No public base URL configured yet -- ask an administrator to set one in Settings so the URLs below are shown
     as full links instead of just paths. This does not affect how the gateway works, only how links are displayed here.
   </div>
 <?php endif; ?>

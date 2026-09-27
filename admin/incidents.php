@@ -23,9 +23,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $host = parse_url($sourceUrl, PHP_URL_HOST);
         $streamExists = false;
         if ($streamId !== false && $streamId !== null) {
-            $stmt = $db->prepare('SELECT 1 FROM streams WHERE id = ?');
-            $stmt->execute([$streamId]);
-            $streamExists = (bool) $stmt->fetchColumn();
+            $streamExists = sv_stream_for_operator($db, $operator, $streamId) !== null;
         }
         if (!$streamExists) {
             sv_flash('err', 'Select an existing stream.');
@@ -44,6 +42,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if ($action === 'github_reply') {
+        if (!sv_is_admin($operator)) { http_response_code(403); exit('Forbidden'); }
         $id = filter_var($_POST['incident_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
         $stmt = $db->prepare('SELECT id, source_url, actions_taken FROM incidents WHERE id = ?');
         $stmt->execute([$id ?: 0]);
@@ -95,8 +94,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         $db->beginTransaction();
         try {
-            $stmt = $db->prepare('SELECT status, actions_taken, access_token_id, stream_id FROM incidents WHERE id = ?');
-            $stmt->execute([$id]);
+            $stmt = $db->prepare("SELECT i.status,i.actions_taken,i.access_token_id,i.stream_id FROM incidents i LEFT JOIN streams s ON s.id=i.stream_id WHERE i.id=? AND (?='admin' OR s.owner_id=?)");
+            $stmt->execute([$id,$operator['role'],$operator['id']]);
             $incident = $stmt->fetch();
             $transition = $transitions[$action];
             if (!$incident || !in_array($incident['status'], $transition['from'], true)) {
@@ -120,16 +119,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $revoked = null;
             if ($action === 'confirm') {
                 if ($incident['access_token_id']) {
-                    $r = $db->prepare("UPDATE access_tokens SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'), revoked_reason = 'leak_confirmed' WHERE id = ? AND revoked_at IS NULL");
-                    $r->execute([$incident['access_token_id']]);
+                    $r = $db->prepare("UPDATE access_tokens SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'), revoked_reason = 'leak_confirmed' WHERE id = ? AND revoked_at IS NULL AND access_point_id IN (SELECT id FROM access_points WHERE stream_id=?)");
+                    $r->execute([$incident['access_token_id'], $incident['stream_id']]);
                     $revoked = $r->rowCount() ? 'token:' . $incident['access_token_id'] : null;
                 } else {
                     $f = $db->prepare('SELECT access_point_id FROM leak_findings WHERE incident_id = ? AND access_point_id IS NOT NULL ORDER BY id DESC LIMIT 1');
                     $f->execute([$id]);
                     $apId = $f->fetchColumn();
                     if ($apId) {
-                        $r = $db->prepare("UPDATE access_points SET status = 'revoked', revoked_at = COALESCE(revoked_at, strftime('%Y-%m-%dT%H:%M:%fZ','now')) WHERE id = ? AND status = 'active'");
-                        $r->execute([$apId]);
+                        $r = $db->prepare("UPDATE access_points SET status = 'revoked', revoked_at = COALESCE(revoked_at, strftime('%Y-%m-%dT%H:%M:%fZ','now')) WHERE id = ? AND stream_id=? AND status = 'active'");
+                        $r->execute([$apId, $incident['stream_id']]);
                         $revoked = $r->rowCount() ? 'access_point:' . $apId : null;
                     }
                 }
@@ -166,18 +165,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     sv_redirect('incidents.php');
 }
 
-$streams = $db->query('SELECT id, name FROM streams ORDER BY name COLLATE NOCASE')->fetchAll();
-$incidents = $db->query('SELECT i.*, s.name AS stream_name, r.comment_url AS reply_url FROM incidents i LEFT JOIN streams s ON s.id = i.stream_id LEFT JOIN leak_replies r ON r.source_url = i.source_url ORDER BY i.detected_at DESC, i.id DESC')->fetchAll();
+$sstmt = $db->prepare("SELECT id,name FROM streams WHERE (?='admin' OR owner_id=?) ORDER BY name COLLATE NOCASE"); $sstmt->execute([$operator['role'],$operator['id']]); $streams = $sstmt->fetchAll();
+$istmt = $db->prepare("SELECT i.*,s.name AS stream_name,r.comment_url AS reply_url FROM incidents i LEFT JOIN streams s ON s.id=i.stream_id LEFT JOIN leak_replies r ON r.source_url=i.source_url WHERE (?='admin' OR s.owner_id=?) ORDER BY i.detected_at DESC,i.id DESC"); $istmt->execute([$operator['role'],$operator['id']]); $incidents = $istmt->fetchAll();
+$fstmt = $db->prepare("SELECT f.id,f.confidence,f.source,f.source_url,f.found_at,s.name AS stream_name FROM leak_findings f JOIN access_points ap ON ap.id=f.access_point_id JOIN streams s ON s.id=ap.stream_id WHERE (?='admin' OR s.owner_id=?) ORDER BY f.found_at DESC,f.id DESC LIMIT 100"); $fstmt->execute([$operator['role'],$operator['id']]); $findings = $fstmt->fetchAll();
 $replyBase = (string) ($db->query("SELECT value FROM settings WHERE key = 'gateway_base_url'")->fetchColumn() ?: '');
 
 $pageTitle = 'Leaks';
 $activeNav = 'incidents';
 require __DIR__ . '/includes/layout_top.php';
 ?>
-<div class="sv-page-heading"><div><h1>Leaks</h1><p class="sv-help">Incidents, scan coverage, watched sources and automatic replies.</p></div><a class="btn" href="#checker">Checker controls</a></div>
+<div class="sv-page-heading"><div><h1>Leaks</h1><p class="sv-help">Incidents, findings and scan coverage for <?= sv_is_admin($operator) ? 'all streams' : 'your streams' ?>.</p></div><a class="btn" href="#checker">Checker controls</a></div>
 <div class="sv-panel">You can record and triage incidents manually here. Confirming an incident will
   revoke the leaked link (the identified token, or the access point that was found). Links the Leak Checker
-  finds on GitHub are revoked automatically, and a notice is posted on issues in allowlisted repositories.</div>
+  finds on GitHub are revoked automatically. The global checker posts a notice on issues in allowlisted repositories.</div>
 
 <div class="sv-panel">
   <h2 style="margin-top:0;">Record an incident</h2>
@@ -233,7 +233,7 @@ require __DIR__ . '/includes/layout_top.php';
                 <button type="submit" class="btn-sm"><?= h($label) ?></button>
               </form>
             <?php endforeach; ?>
-            <?php if (empty($i['reply_url']) && sv_parse_issue_url((string) $i['source_url']) && $replyBase !== ''): ?>
+            <?php if (sv_is_admin($operator) && empty($i['reply_url']) && sv_parse_issue_url((string) $i['source_url']) && $replyBase !== ''): ?>
               <form method="post" style="display:inline;" data-confirm="<?= h("Post this public comment on GitHub?\n\n" . sv_notice_body($replyBase)) ?>">
                 <?= sv_csrf_field() ?>
                 <input type="hidden" name="action" value="github_reply">
@@ -248,5 +248,6 @@ require __DIR__ . '/includes/layout_top.php';
   <?php endif; ?>
 </div>
 
-<?php require __DIR__ . '/includes/leak_panels.php'; ?>
+<div class="sv-panel"><h2>Recent findings</h2><?php if (!$findings): ?><p class="sv-help">No findings yet.</p><?php else: ?><table><tr><th>Stream</th><th>Confidence</th><th>Source</th><th>Found</th></tr><?php foreach ($findings as $f): ?><tr><td><?= h($f['stream_name']) ?></td><td><?= h($f['confidence']) ?></td><td><?= h($f['source']) ?> <span class="mono"><?= h($f['source_url']) ?></span></td><td><?= h($f['found_at']) ?></td></tr><?php endforeach; ?></table><?php endif; ?></div>
+<?php if (sv_is_admin($operator)): require __DIR__ . '/includes/leak_panels.php'; else: ?><div id="checker"></div><?php sv_render_leak_status($db,$operator); ?><div class="sv-panel"><p>Your optional GitHub token and watched sources are managed in <a href="my_account.php">My account</a>.</p></div><?php endif; ?>
 <?php require __DIR__ . '/includes/layout_bottom.php'; ?>

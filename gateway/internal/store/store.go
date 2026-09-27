@@ -88,6 +88,7 @@ type Stream struct {
 	DisabledAt         sql.NullString
 	ReplacementReason  string
 	ReplacementMessage sql.NullString
+	AllowRemux         bool
 }
 
 // AccessPoint is a resolved public_path -> stream mapping.
@@ -111,23 +112,27 @@ func (s *Store) ResolveAccessPoint(publicPath string) (*AccessPoint, error) {
 	row := s.db.QueryRow(`
 		SELECT ap.id, ap.stream_id, ap.public_path, ap.visibility, ap.output_format, ap.status, ap.revoked_at,
 		       st.id, st.name, st.source_type, st.source_url, st.source_username,
-		       st.source_password_enc, st.status, st.disabled_at, st.replacement_reason, st.replacement_message
+		       st.source_password_enc, st.status, st.disabled_at, st.replacement_reason, st.replacement_message,
+		       CASE WHEN owner.role = 'user' THEN owner.allow_remux ELSE 1 END
 		FROM access_points ap
 		JOIN streams st ON st.id = ap.stream_id
+		LEFT JOIN operators owner ON owner.id = st.owner_id
 		WHERE ap.public_path = ?`, publicPath)
 
 	var ap AccessPoint
+	var allowRemux int
 	if err := row.Scan(
 		&ap.ID, &ap.StreamID, &ap.PublicPath, &ap.Visibility, &ap.OutputFormat, &ap.Status, &ap.RevokedAt,
 		&ap.Stream.ID, &ap.Stream.Name, &ap.Stream.SourceType, &ap.Stream.SourceURL,
 		&ap.Stream.SourceUsername, &ap.Stream.SourcePasswordEnc, &ap.Stream.Status, &ap.Stream.DisabledAt,
-		&ap.Stream.ReplacementReason, &ap.Stream.ReplacementMessage,
+		&ap.Stream.ReplacementReason, &ap.Stream.ReplacementMessage, &allowRemux,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
+	ap.Stream.AllowRemux = allowRemux != 0
 	return &ap, nil
 }
 

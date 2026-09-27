@@ -198,3 +198,55 @@ func TestParseIssueURL(t *testing.T) {
 		}
 	}
 }
+
+func TestUserTokenScansOnlyThatUsersAccessPoints(t *testing.T) {
+	st, db := newTestStore(t)
+	mkUser := func(name string) int64 {
+		res, err := db.Exec(`INSERT INTO operators (username, password_hash, role, status) VALUES (?, 'x', 'user', 'active')`, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, _ := res.LastInsertId()
+		return id
+	}
+	a, b := mkUser("alice"), mkUser("bob")
+	for _, row := range []struct {
+		owner int64
+		path  string
+	}{{a, "alice-live"}, {b, "bob-live"}} {
+		res, err := db.Exec(`INSERT INTO streams (name, source_type, source_url, owner_id) VALUES ('S', 'hls', 'https://src.example/x.m3u8', ?)`, row.owner)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sid, _ := res.LastInsertId()
+		if _, err := db.Exec(`INSERT INTO access_points (stream_id, public_path, visibility) VALUES (?, ?, 'public')`, sid, row.path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Exec(`INSERT OR REPLACE INTO settings (key, value) VALUES ('gateway_base_url', ?)`, testBase)
+
+	var queries []string
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries = append(queries, r.URL.Query().Get("q"))
+		w.Header().Set("X-RateLimit-Remaining", "10")
+		w.Write([]byte(`{"items":[]}`))
+	}))
+	defer gh.Close()
+	c := NewClient("user-token")
+	c.BaseURL = gh.URL
+	sum := (&Scanner{Store: st, GitHub: c, BaseURL: testBase, OwnerID: &a}).Run(context.Background())
+	if sum.Err != nil {
+		t.Fatal(sum.Err)
+	}
+	if sum.StreamsChecked != 1 || len(queries) == 0 {
+		t.Fatalf("expected exactly alice's access point to be scanned, checked=%d queries=%d", sum.StreamsChecked, len(queries))
+	}
+	for _, q := range queries {
+		if strings.Contains(q, "bob-live") {
+			t.Fatalf("user token query leaked another user's path: %q", q)
+		}
+		if !strings.Contains(q, "alice-live") {
+			t.Fatalf("unexpected query for alice's scan: %q", q)
+		}
+	}
+}

@@ -6,12 +6,16 @@ require_once __DIR__ . '/includes/csrf.php';
 $operator = sv_require_login();
 $db = sv_db();
 
-$streamCount = (int) $db->query('SELECT COUNT(*) FROM streams')->fetchColumn();
-$activeStreamCount = (int) $db->query("SELECT COUNT(*) FROM streams WHERE status='active'")->fetchColumn();
-$privateAccessCount = (int) $db->query("SELECT COUNT(*) FROM access_points WHERE status='active'")->fetchColumn();
-$openIncidentCount = (int) $db->query("SELECT COUNT(*) FROM incidents WHERE status IN ('new','probable','confirmed')")->fetchColumn();
-
-$recentStreams = $db->query('SELECT id, name, status, created_at FROM streams ORDER BY created_at DESC LIMIT 5')->fetchAll();
+$count = static function (string $sql) use ($db, $operator): int {
+    $stmt = $db->prepare($sql); $stmt->execute([$operator['role'], $operator['id']]); return (int) $stmt->fetchColumn();
+};
+$streamCount = $count("SELECT COUNT(*) FROM streams s WHERE (?='admin' OR s.owner_id=?)");
+$activeStreamCount = $count("SELECT COUNT(*) FROM streams s WHERE s.status='active' AND (?='admin' OR s.owner_id=?)");
+$privateAccessCount = $count("SELECT COUNT(*) FROM access_points ap JOIN streams s ON s.id=ap.stream_id WHERE ap.status='active' AND (?='admin' OR s.owner_id=?)");
+$openIncidentCount = $count("SELECT COUNT(*) FROM incidents i JOIN streams s ON s.id=i.stream_id WHERE i.status IN ('new','probable','confirmed') AND (?='admin' OR s.owner_id=?)");
+$recentStmt = $db->prepare("SELECT s.id,s.name,s.status,s.created_at FROM streams s WHERE (?='admin' OR s.owner_id=?) ORDER BY s.created_at DESC LIMIT 5");
+$recentStmt->execute([$operator['role'], $operator['id']]);
+$recentStreams = $recentStmt->fetchAll();
 
 $pageTitle = 'Dashboard';
 $activeNav = 'dashboard';
@@ -27,8 +31,8 @@ require __DIR__ . '/includes/layout_top.php';
 </div>
 
 <div class="sv-panel"><h2>Quick actions</h2><div class="sv-section-nav">
-  <a href="stream_form.php">Add stream</a><a href="incidents.php">Review leaks</a><a href="error_screen.php">Edit error screen</a>
-  <form method="post" action="settings.php"><?= sv_csrf_field() ?><input type="hidden" name="action" value="request_leak_scan"><button class="btn-primary" type="submit">Scan now</button></form>
+  <a href="stream_form.php">Add stream</a><a href="incidents.php">Review leaks</a>
+  <?php if (sv_is_admin($operator)): ?><a href="error_screen.php">Edit error screen</a><form method="post" action="settings.php"><?= sv_csrf_field() ?><input type="hidden" name="action" value="request_leak_scan"><button class="btn-primary" type="submit">Scan now</button></form><?php else: ?><a href="my_account.php">My scan settings</a><?php endif; ?>
 </div></div>
 
 <h2>Recently added streams</h2>
@@ -50,6 +54,6 @@ require __DIR__ . '/includes/layout_top.php';
   <?php endif; ?>
 </div>
 
-<?php sv_render_leak_status($db); ?>
+<?php sv_render_leak_status($db, $operator); ?>
 
 <?php require __DIR__ . '/includes/layout_bottom.php'; ?>

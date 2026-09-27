@@ -4,13 +4,15 @@ require_once __DIR__ . '/includes/auth.php';
 $operator = sv_require_login();
 $db = sv_db();
 
-$streams = $db->query('
+$stmt = $db->prepare('
     SELECT s.*,
            (SELECT COUNT(*) FROM access_points ap WHERE ap.stream_id = s.id AND ap.status = "active") AS access_count,
            (SELECT COUNT(*) FROM incidents i WHERE i.stream_id = s.id AND i.status IN ("new","probable","confirmed")) AS incident_count
-    FROM streams s
+    FROM streams s WHERE (? = \'admin\' OR s.owner_id = ?)
     ORDER BY s.name COLLATE NOCASE
-')->fetchAll();
+');
+$stmt->execute([$operator['role'], $operator['id']]);
+$streams = $stmt->fetchAll();
 
 $pageTitle = 'Streams';
 $activeNav = 'streams';

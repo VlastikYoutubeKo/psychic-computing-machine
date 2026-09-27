@@ -9,10 +9,14 @@ function sv_current_operator(): ?array
     if (empty($_SESSION['operator_id'])) {
         return null;
     }
-    $stmt = sv_db()->prepare('SELECT id, username FROM operators WHERE id = ?');
+    $stmt = sv_db()->prepare("SELECT id, username, role, status, max_streams, max_access_points, allow_remux FROM operators WHERE id = ? AND status = 'active'");
     $stmt->execute([$_SESSION['operator_id']]);
     $row = $stmt->fetch();
-    return $row ?: null;
+    if (!$row) {
+        unset($_SESSION['operator_id']);
+        return null;
+    }
+    return $row;
 }
 
 function sv_require_login(): array
@@ -22,6 +26,32 @@ function sv_require_login(): array
         sv_redirect('login.php');
     }
     return $op;
+}
+
+function sv_is_admin(array $op): bool { return $op['role'] === 'admin'; }
+
+function sv_require_admin(): array
+{
+    $op = sv_require_login();
+    if (!sv_is_admin($op)) {
+        http_response_code(403);
+        exit('Forbidden');
+    }
+    return $op;
+}
+
+function sv_stream_for_operator(PDO $db, array $op, int $id): ?array
+{
+    $stmt = $db->prepare('SELECT * FROM streams WHERE id = ? AND (? = \'admin\' OR owner_id = ?)');
+    $stmt->execute([$id, $op['role'], $op['id']]);
+    return $stmt->fetch() ?: null;
+}
+
+function sv_incident_for_operator(PDO $db, array $op, int $id): ?array
+{
+    $stmt = $db->prepare('SELECT i.* FROM incidents i JOIN streams s ON s.id = i.stream_id WHERE i.id = ? AND (? = \'admin\' OR s.owner_id = ?)');
+    $stmt->execute([$id, $op['role'], $op['id']]);
+    return $stmt->fetch() ?: null;
 }
 
 // Cloudflare's published edge ranges (https://www.cloudflare.com/ips/).
@@ -97,7 +127,7 @@ function sv_login_retry_after(string $username): int
 function sv_login(string $username, string $password): bool
 {
     usleep(300_000);
-    $stmt = sv_db()->prepare('SELECT id, password_hash FROM operators WHERE username = ?');
+    $stmt = sv_db()->prepare("SELECT id, password_hash FROM operators WHERE username = ? AND status = 'active'");
     $stmt->execute([$username]);
     $row = $stmt->fetch();
     $ok = $row !== false && password_verify($password, $row['password_hash']);

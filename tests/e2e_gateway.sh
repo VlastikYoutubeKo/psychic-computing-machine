@@ -31,8 +31,7 @@ sleep 1
 
 echo "== 3. Building scratch SQLite DB with a private access point =="
 DB="$WORK/streamvault.sqlite"
-sqlite3 "$DB" < "$ROOT/migrations/0001_init.sql"
-sqlite3 "$DB" < "$ROOT/migrations/0004_slate_timestamps.sql"
+for migration in "$ROOT"/migrations/*.sql; do sqlite3 "$DB" < "$migration"; done
 sqlite3 "$DB" "INSERT INTO streams (name, source_type, source_url) VALUES ('E2E Nova', 'hls', 'http://127.0.0.1:$SOURCE_PORT/index.m3u8');"
 STREAM_ID=$(sqlite3 "$DB" "SELECT id FROM streams WHERE name='E2E Nova';")
 sqlite3 "$DB" "INSERT INTO access_points (stream_id, public_path, visibility) VALUES ($STREAM_ID, 'live/e2e', 'private');"

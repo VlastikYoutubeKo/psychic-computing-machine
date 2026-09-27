@@ -18,6 +18,7 @@ type Scanner struct {
 	Store   *Store
 	GitHub  *Client
 	BaseURL string
+	OwnerID *int64 // nil: global token scans all APs and global sources
 }
 
 // Run scans every active access point via GitHub code + issue search: one
@@ -39,13 +40,13 @@ func (sc *Scanner) Run(ctx context.Context) RunSummary {
 	sum := RunSummary{}
 	var queryErrors, incompleteQueries, recordErrors int
 
-	aps, err := sc.Store.ActiveAccessPoints()
+	aps, err := sc.Store.ActiveAccessPointsForOwner(sc.OwnerID)
 	if err != nil {
 		sum.Err = fmt.Errorf("loading access points: %w", err)
 		return sum
 	}
 
-	sources, err := sc.Store.EnabledGitHubSources()
+	sources, err := sc.Store.EnabledGitHubSourcesForOwner(sc.OwnerID)
 	if err != nil {
 		sum.Err = fmt.Errorf("loading leak sources: %w", err)
 		return sum
@@ -219,6 +220,9 @@ func (sc *Scanner) respond(ctx context.Context, m Match, incidentID int64, sourc
 	if revokedNow {
 		sum.AutoRevoked++
 		log.Printf("leakcheck: auto-revoked %s for incident %d", target, incidentID)
+	}
+	if sc.OwnerID != nil {
+		return nil // Personal tokens never post global GitHub notice comments.
 	}
 	if !inactive || sc.GitHub == nil || !(strings.HasPrefix(source, "github_issue") || strings.HasPrefix(source, "github_pr")) {
 		return nil

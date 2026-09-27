@@ -9,12 +9,9 @@ $db = sv_db();
 $id = isset($_GET['id']) ? (int) $_GET['id'] : 0;
 $stream = null;
 if ($id) {
-    $stmt = $db->prepare('SELECT * FROM streams WHERE id = ?');
-    $stmt->execute([$id]);
-    $stream = $stmt->fetch();
+    $stream = sv_stream_for_operator($db, $operator, $id);
     if (!$stream) {
-        sv_flash('err', 'Stream not found.');
-        sv_redirect('streams.php');
+        http_response_code(404); exit('Stream not found.');
     }
 }
 
@@ -46,6 +43,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $validTypes = ['restreamer', 'tvheadend', 'hls', 'mpegts', 'generic'];
     if (!in_array($form['source_type'], $validTypes, true)) {
         $errors[] = 'Invalid source type.';
+    }
+    if (!$stream && !sv_is_admin($operator)) {
+        $count = $db->prepare('SELECT COUNT(*) FROM streams WHERE owner_id=?');
+        $count->execute([$operator['id']]);
+        if ((int) $count->fetchColumn() >= (int) $operator['max_streams']) $errors[] = 'Stream limit reached.';
     }
 
     // If the URL itself carries user:pass@host, extract it so the raw URL
@@ -97,9 +99,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             sv_redirect('stream_view.php?id=' . $id);
         } else {
             $db->prepare('INSERT INTO streams (name, description, source_type, source_url, source_username,
-                source_password_enc, rotation_mode, replacement_reason) VALUES (?,?,?,?,?,?,?,?)')
+                source_password_enc, rotation_mode, replacement_reason, owner_id) VALUES (?,?,?,?,?,?,?,?,?)')
                 ->execute([$form['name'], $form['description'], $form['source_type'], $cleanUrl,
-                    $finalUsername ?: null, $encryptedPassword, $form['rotation_mode'], $form['replacement_reason']]);
+                    $finalUsername ?: null, $encryptedPassword, $form['rotation_mode'], $form['replacement_reason'], $operator['id']]);
             $newId = (int) $db->lastInsertId();
             sv_audit('stream_created', "stream:$newId");
             sv_flash('ok', 'Stream created. Now add a public or private access point to it.');
@@ -145,7 +147,7 @@ require __DIR__ . '/includes/layout_top.php';
     <div class="sv-help">Leak response is automatic: when the Leak Checker finds one of this stream's links posted publicly on GitHub, that link is revoked right away (players get the "Stream unavailable" screen) and the incident is logged.</div>
 
     <label>Replacement reason shown if revoked</label>
-    <div class="sv-help">Each reason has editable video and browser text in <a href="error_screen.php">Error screen</a>.</div>
+    <div class="sv-help">The administrator maintains the video and browser text for each reason.</div>
     <select name="replacement_reason">
       <?php $reasons = [
           'limited_bandwidth' => 'Limited bandwidth',

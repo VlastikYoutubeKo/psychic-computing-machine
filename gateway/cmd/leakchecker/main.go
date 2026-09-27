@@ -50,7 +50,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("checking whether a scan is due: %v", err)
 	}
-	if !shouldRun {
+	userDue, err := store.AnyUserScanDue(minScanInterval)
+	if err != nil {
+		log.Fatalf("checking user scan schedule: %v", err)
+	}
+	if !shouldRun && !userDue {
 		return // quiet no-op; the timer tries again on its next tick
 	}
 
@@ -85,55 +89,80 @@ func main() {
 		key = k
 	}
 
-	runID, err := store.StartRun([]string{"github"})
-	if err != nil {
-		log.Printf("recording run start: %v", err)
-		return
-	}
-
-	token, configured, err := store.GitHubToken(key)
-	if err != nil {
-		finishWithError(store, runID, err)
-		return
-	}
-	if !configured {
-		finishWithError(store, runID, errStr("no GitHub token configured in Settings -- Leak Checker has nothing to scan with"))
-		return
-	}
-
 	baseURL, err := store.BaseURL()
-	if err != nil {
-		finishWithError(store, runID, err)
-		return
-	}
-
-	scanner := &leakcheck.Scanner{
-		Store:   store,
-		GitHub:  leakcheck.NewClient(token),
-		BaseURL: baseURL,
-	}
+	baseErr := err
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-
-	sum := scanner.Run(ctx)
-	if err := store.FinishRun(runID, sum); err != nil {
-		log.Printf("recording run finish: %v", err)
-	}
-	if sum.Err != nil {
-		log.Printf("leakchecker run finished with a note: %v", sum.Err)
-	}
-	log.Printf("leakchecker: checked %d access points, %d queries, %d new findings, %d auto-revoked, %d GitHub replies",
-		sum.StreamsChecked, sum.QueriesMade, sum.FindingsCreated, sum.AutoRevoked, sum.RepliesPosted)
-
-	if requestedValue != "" {
-		// Only clears the flag if it still holds the exact value seen at
-		// the start of this run -- a click that landed mid-run wrote a new
-		// timestamp, which must survive for the next invocation to pick up.
-		if err := store.ClearScanRequestIfUnchanged(requestedValue); err != nil {
-			log.Printf("clearing scan request flag: %v", err)
+	if shouldRun {
+		runID, e := store.StartRun([]string{"github"})
+		if e != nil {
+			log.Printf("recording global run start: %v", e)
+		} else {
+			token, configured, e := store.GitHubToken(key)
+			switch {
+			case e != nil:
+				finishWithError(store, runID, e)
+			case !configured:
+				finishWithError(store, runID, errStr("no global GitHub token configured"))
+			case baseErr != nil:
+				finishWithError(store, runID, baseErr)
+			default:
+				sum := (&leakcheck.Scanner{Store: store, GitHub: leakcheck.NewClient(token), BaseURL: baseURL}).Run(ctx)
+				finishRun(store, runID, "global", sum)
+				if requestedValue != "" {
+					if e := store.ClearScanRequestIfUnchanged(requestedValue); e != nil {
+						log.Printf("clearing global scan request: %v", e)
+					}
+				}
+			}
 		}
 	}
+	accounts, e := store.UserScanAccounts(key)
+	if e != nil {
+		log.Printf("loading user scanner credentials: %v", e)
+		return
+	}
+	for _, account := range accounts {
+		due, e := store.UserShouldRun(account.ID, account.Requested, minScanInterval)
+		if e != nil {
+			log.Printf("checking user %d scan schedule: %v", account.ID, e)
+			continue
+		}
+		if !due {
+			continue
+		}
+		id := account.ID
+		runID, e := store.StartRunForOwner(&id, []string{"github"})
+		if e != nil {
+			log.Printf("recording user %d run start: %v", id, e)
+			continue
+		}
+		switch {
+		case account.Err != nil:
+			finishWithError(store, runID, account.Err)
+		case baseErr != nil:
+			finishWithError(store, runID, baseErr)
+		default:
+			sum := (&leakcheck.Scanner{Store: store, GitHub: leakcheck.NewClient(account.Token), BaseURL: baseURL, OwnerID: &id}).Run(ctx)
+			finishRun(store, runID, "user", sum)
+			if account.Requested != "" {
+				if e := store.ClearUserRequestIfUnchanged(id, account.Requested); e != nil {
+					log.Printf("clearing user %d scan request: %v", id, e)
+				}
+			}
+		}
+	}
+}
+
+func finishRun(store *leakcheck.Store, runID int64, scope string, sum leakcheck.RunSummary) {
+	if err := store.FinishRun(runID, sum); err != nil {
+		log.Printf("recording %s run finish: %v", scope, err)
+	}
+	if sum.Err != nil {
+		log.Printf("leakchecker %s run incomplete: %v", scope, sum.Err)
+	}
+	log.Printf("leakchecker %s: checked %d access points, %d queries, %d new findings", scope, sum.StreamsChecked, sum.QueriesMade, sum.FindingsCreated)
 }
 
 type errStr string

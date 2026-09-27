@@ -2,8 +2,8 @@
 $baseUrl = $db->query("SELECT value FROM settings WHERE key = 'gateway_base_url'")->fetchColumn() ?: '';
 $githubTokenSet = (bool) $db->query("SELECT 1 FROM settings WHERE key = 'github_token_enc'")->fetchColumn();
 $replyAllowlist = (string) ($db->query("SELECT value FROM settings WHERE key = 'github_reply_allowlist'")->fetchColumn() ?: '');
-$sources = $db->query('SELECT id, provider, identifier, enabled, last_scanned_at FROM leak_sources ORDER BY provider, identifier')->fetchAll();
-sv_render_leak_status($db);
+$sources = $db->query('SELECT id, provider, identifier, enabled, last_scanned_at FROM leak_sources WHERE owner_id IS NULL ORDER BY provider, identifier')->fetchAll();
+sv_render_leak_status($db, $operator);
 ?>
 <div id="checker"></div>
 

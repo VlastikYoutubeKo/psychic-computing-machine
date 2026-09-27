@@ -96,7 +96,7 @@ func (s *Store) ClearScanRequestIfUnchanged(seenValue string) error {
 // ShouldRun.
 func (s *Store) LastRunStartedAt() (time.Time, bool, error) {
 	var v sql.NullString
-	err := s.db.QueryRow(`SELECT started_at FROM leak_checker_runs ORDER BY id DESC LIMIT 1`).Scan(&v)
+	err := s.db.QueryRow(`SELECT started_at FROM leak_checker_runs WHERE owner_id IS NULL ORDER BY id DESC LIMIT 1`).Scan(&v)
 	if errors.Is(err, sql.ErrNoRows) || !v.Valid {
 		return time.Time{}, false, nil
 	}
@@ -108,6 +108,85 @@ func (s *Store) LastRunStartedAt() (time.Time, bool, error) {
 		return time.Time{}, false, nil // malformed/legacy value -- treat as "no prior run" rather than fail the whole invocation
 	}
 	return t, true, nil
+}
+
+type UserScanAccount struct {
+	ID        int64
+	Token     string
+	Requested string
+	Err       error
+}
+
+func (s *Store) UserScanAccounts(key []byte) ([]UserScanAccount, error) {
+	rows, err := s.db.Query(`SELECT id,github_token_enc,COALESCE(leak_scan_requested_at,'') FROM operators WHERE role='user' AND status='active' AND github_token_enc IS NOT NULL ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []UserScanAccount
+	for rows.Next() {
+		var a UserScanAccount
+		var enc string
+		if err := rows.Scan(&a.ID, &enc, &a.Requested); err != nil {
+			return nil, err
+		}
+		if key == nil {
+			a.Err = errors.New("encryption key unavailable")
+		} else {
+			var plain []byte
+			plain, a.Err = secretbox.Decrypt(key, enc)
+			if a.Err == nil {
+				a.Token = string(plain)
+			}
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) UserShouldRun(id int64, requested string, minInterval time.Duration) (bool, error) {
+	if requested != "" {
+		return true, nil
+	}
+	var v string
+	err := s.db.QueryRow(`SELECT started_at FROM leak_checker_runs WHERE owner_id=? ORDER BY id DESC LIMIT 1`, id).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	t, e := time.Parse("2006-01-02T15:04:05.000Z", v)
+	return e != nil || time.Since(t) >= minInterval, nil
+}
+
+func (s *Store) AnyUserScanDue(minInterval time.Duration) (bool, error) {
+	rows, err := s.db.Query(`SELECT o.id,COALESCE(o.leak_scan_requested_at,''),r.started_at FROM operators o LEFT JOIN leak_checker_runs r ON r.id=(SELECT MAX(id) FROM leak_checker_runs WHERE owner_id=o.id) WHERE o.role='user' AND o.status='active' AND o.github_token_enc IS NOT NULL`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var requested string
+		var last sql.NullString
+		if err := rows.Scan(&id, &requested, &last); err != nil {
+			return false, err
+		}
+		if requested != "" || !last.Valid {
+			return true, nil
+		}
+		t, e := time.Parse("2006-01-02T15:04:05.000Z", last.String)
+		if e != nil || time.Since(t) >= minInterval {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
+func (s *Store) ClearUserRequestIfUnchanged(id int64, seen string) error {
+	_, err := s.db.Exec(`UPDATE operators SET leak_scan_requested_at=NULL WHERE id=? AND leak_scan_requested_at=?`, id, seen)
+	return err
 }
 
 // ShouldRun decides whether this invocation should actually perform a scan:
@@ -192,7 +271,11 @@ type LeakSource struct {
 }
 
 func (s *Store) EnabledGitHubSources() ([]LeakSource, error) {
-	rows, err := s.db.Query(`SELECT id, provider, identifier FROM leak_sources WHERE enabled = 1 AND provider IN ('github_repo','github_org')`)
+	return s.EnabledGitHubSourcesForOwner(nil)
+}
+
+func (s *Store) EnabledGitHubSourcesForOwner(owner *int64) ([]LeakSource, error) {
+	rows, err := s.db.Query(`SELECT id, provider, identifier FROM leak_sources WHERE enabled = 1 AND provider IN ('github_repo','github_org') AND ((? IS NULL AND owner_id IS NULL) OR owner_id = ?)`, owner, owner)
 	if err != nil {
 		return nil, err
 	}
@@ -216,11 +299,15 @@ func (s *Store) TouchLeakSource(id int64) error {
 // ActiveAccessPoints loads every access point worth scanning: belonging to
 // an active stream, itself active (a revoked one can't leak anything new).
 func (s *Store) ActiveAccessPoints() ([]AccessPointInfo, error) {
+	return s.ActiveAccessPointsForOwner(nil)
+}
+
+func (s *Store) ActiveAccessPointsForOwner(owner *int64) ([]AccessPointInfo, error) {
 	rows, err := s.db.Query(`
 		SELECT ap.id, ap.stream_id, ap.public_path, ap.visibility, ap.path_is_secret
 		FROM access_points ap
 		JOIN streams st ON st.id = ap.stream_id
-		WHERE ap.status = 'active' AND st.status = 'active'`)
+		WHERE ap.status = 'active' AND st.status = 'active' AND (? IS NULL OR st.owner_id = ?)`, owner, owner)
 	if err != nil {
 		return nil, err
 	}
@@ -407,8 +494,12 @@ type RunSummary struct {
 }
 
 func (s *Store) StartRun(providers []string) (int64, error) {
+	return s.StartRunForOwner(nil, providers)
+}
+
+func (s *Store) StartRunForOwner(owner *int64, providers []string) (int64, error) {
 	providersJSON := mustJSON(providers)
-	res, err := s.db.Exec(`INSERT INTO leak_checker_runs (providers_run) VALUES (?)`, providersJSON)
+	res, err := s.db.Exec(`INSERT INTO leak_checker_runs (providers_run, owner_id) VALUES (?, ?)`, providersJSON, owner)
 	if err != nil {
 		return 0, err
 	}

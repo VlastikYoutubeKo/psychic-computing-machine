@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -35,30 +36,23 @@ func newTestHandler(t *testing.T) (*Handler, *sql.DB) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.sqlite")
 
-	schema, err := os.ReadFile("../../../migrations/0001_init.sql")
-	if err != nil {
-		t.Fatalf("reading migration: %v", err)
-	}
 	raw, err := sql.Open("sqlite", "file:"+dbPath)
 	if err != nil {
 		t.Fatalf("opening raw db: %v", err)
 	}
-	if _, err := raw.Exec(string(schema)); err != nil {
-		t.Fatalf("applying schema: %v", err)
-	}
-	patch, err := os.ReadFile("../../../migrations/0004_slate_timestamps.sql")
+	migrations, err := filepath.Glob("../../../migrations/*.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := raw.Exec(string(patch)); err != nil {
-		t.Fatal(err)
-	}
-	copyMigration, err := os.ReadFile("../../../migrations/0006_slate_texts_ai.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := raw.Exec(string(copyMigration)); err != nil {
-		t.Fatal(err)
+	sort.Strings(migrations)
+	for _, path := range migrations {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := raw.Exec(string(content)); err != nil {
+			t.Fatalf("applying %s: %v", path, err)
+		}
 	}
 
 	st, err := store.Open(dbPath)

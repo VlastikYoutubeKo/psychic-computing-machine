@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-09-27 -- Multi-user accounts
+
+- Roles (admin/user). Users see and manage only their own streams, access
+  points, tokens, incidents and findings; admins see everything. Every id
+  from GET/POST is ownership-checked server-side (sv_stream_for_operator,
+  sv_incident_for_operator, stream-scoped access point/token queries).
+- Admin-created accounts with a one-time invite link (32 random bytes, only
+  the SHA-256 stored, 72 h, single use, moved from the URL into the session,
+  guessing throttled). New pages: Accounts (admin), My account, Accept invite.
+- Per-account limits: max streams / access points (enforced by DB triggers,
+  race-safe) and allow_remux, enforced in the gateway (MPEG-TS from an owner
+  without it gets the temporary slate / 503, never a remux session).
+- Disabling an account drops its session on the next request; the last
+  active admin cannot be disabled.
+- Leak Checker: the global token scans everyone; a user's own token scans
+  only that user's access points and sources. GitHub auto-replies stay
+  global. Error screen, AI and global settings are admin-only.
+- Migration 0008 (tested on a copy of production: owners backfilled to the
+  existing admin, integrity/foreign keys clean).
+- tests/e2e_accounts.sh: 40 checks incl. IDOR on every GET page and POST
+  action; verified non-vacuous by mutation (breaking the token ownership
+  check makes it fail).
+
 ## 2026-09-27 -- Cold sources no longer park players on the temporary slate
 
 The first VLC opening the 4fun link showed "Temporarily unavailable" forever

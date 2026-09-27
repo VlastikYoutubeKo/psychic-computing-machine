@@ -22,8 +22,12 @@ $activeNav ??= '';
     <a href="index.php" class="<?= $activeNav === 'dashboard' ? 'active' : '' ?>" <?= $activeNav === 'dashboard' ? 'aria-current="page"' : '' ?>><span class="sv-nav-icon" aria-hidden="true">◫</span>Dashboard</a>
     <a href="streams.php" class="<?= $activeNav === 'streams' ? 'active' : '' ?>" <?= $activeNav === 'streams' ? 'aria-current="page"' : '' ?>><span class="sv-nav-icon" aria-hidden="true">▶</span>Streams</a>
     <a href="incidents.php" class="<?= $activeNav === 'incidents' ? 'active' : '' ?>" <?= $activeNav === 'incidents' ? 'aria-current="page"' : '' ?>><span class="sv-nav-icon" aria-hidden="true">◇</span>Leaks</a>
+    <?php if (sv_is_admin($operator)): ?>
+    <a href="accounts.php" class="<?= $activeNav === 'accounts' ? 'active' : '' ?>" <?= $activeNav === 'accounts' ? 'aria-current="page"' : '' ?>><span class="sv-nav-icon" aria-hidden="true">◎</span>Accounts</a>
     <a href="error_screen.php" class="<?= $activeNav === 'error_screen' ? 'active' : '' ?>" <?= $activeNav === 'error_screen' ? 'aria-current="page"' : '' ?>><span class="sv-nav-icon" aria-hidden="true">▣</span>Error screen</a>
     <a href="settings.php" class="<?= $activeNav === 'settings' ? 'active' : '' ?>" <?= $activeNav === 'settings' ? 'aria-current="page"' : '' ?>><span class="sv-nav-icon" aria-hidden="true">⚙</span>Settings</a>
+    <?php endif; ?>
+    <a href="my_account.php" class="<?= $activeNav === 'my_account' ? 'active' : '' ?>" <?= $activeNav === 'my_account' ? 'aria-current="page"' : '' ?>><span class="sv-nav-icon" aria-hidden="true">◉</span>My account</a>
     <div class="sv-nav-foot">STREAMVAULT · CONTROL PANEL</div>
   </nav>
   <main class="sv-main">

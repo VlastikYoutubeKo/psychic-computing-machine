@@ -3,7 +3,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/includes/auth.php';
 require_once __DIR__ . '/includes/csrf.php';
 require_once __DIR__ . '/includes/secret_box.php';
-$operator = sv_require_login();
+$operator = sv_require_admin();
 $db = sv_db();
 
 function sv_put_setting(PDO $db, string $key, string $value): void
@@ -205,16 +205,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($id === false || $id === null) {
             sv_flash('err', 'Invalid source ID.');
         } else {
-            $stmt = $db->prepare("SELECT provider FROM leak_sources WHERE id = ? AND provider IN ('github_repo','github_org')");
+            $stmt = $db->prepare("SELECT provider FROM leak_sources WHERE id = ? AND owner_id IS NULL AND provider IN ('github_repo','github_org')");
             $stmt->execute([$id]);
             if (!$stmt->fetchColumn()) {
                 sv_flash('err', 'GitHub source not found.');
             } elseif ($action === 'toggle_leak_source') {
-                $db->prepare('UPDATE leak_sources SET enabled = 1 - enabled WHERE id = ?')->execute([$id]);
+                $db->prepare('UPDATE leak_sources SET enabled = 1 - enabled WHERE id = ? AND owner_id IS NULL')->execute([$id]);
                 sv_audit('leak_source_toggled', "leak_source:$id");
                 sv_flash('ok', 'Source enabled state updated.');
             } else {
-                $db->prepare('DELETE FROM leak_sources WHERE id = ?')->execute([$id]);
+                $db->prepare('DELETE FROM leak_sources WHERE id = ? AND owner_id IS NULL')->execute([$id]);
                 sv_audit('leak_source_deleted', "leak_source:$id");
                 sv_flash('ok', 'Watched source removed.');
             }

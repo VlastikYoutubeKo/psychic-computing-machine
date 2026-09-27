@@ -194,3 +194,20 @@ Accepted / open:
   hardening for help.iptvlookup.com: respond 404 for /includes/*, /cli/* and
   /.* -- pending owner approval (shared production Caddy).
 - Radio URL DNS rebinding (admin-entered only; documented above).
+
+## Multi-user accounts (2026-09-27)
+
+- Authorization is server-side on every request: the session operator is
+  re-read with status='active' each time (disabling = immediate logout), and
+  every stream/access point/token/incident/leak-source id is checked against
+  the operator's ownership (admins bypass). tests/e2e_accounts.sh covers all
+  pages and actions with another user's ids.
+- Invites: 64-hex token, SHA-256 at rest, 72 h expiry, single use via an
+  atomic UPDATE, Referrer-Policy no-referrer, token moved out of the URL,
+  guessing counted in login_attempts.
+- Quotas are DB triggers, so concurrent requests cannot exceed them.
+- Remux permission is enforced in the gateway, not only the admin UI.
+- Users' own GitHub tokens are encrypted like the global one and only used
+  to scan that user's access points; they never post public replies.
+- Admin-only: accounts, error screen (texts/AI/audio -- the OpenRouter key
+  is money-limited), global settings, GitHub replies.
