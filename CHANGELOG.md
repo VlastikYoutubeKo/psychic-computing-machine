@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-09-27 -- Cold sources no longer park players on the temporary slate
+
+The first VLC opening the 4fun link showed "Temporarily unavailable" forever
+while a second VLC played the stream: the cold Tvheadend source needed more
+than the transport's 10 s ResponseHeaderTimeout (log: "failed: timeout"),
+and the player was then sent to the endless shared slate stream, which it
+kept refreshing without ever asking the entry URL again.
+- Entry fetches wait up to 25 s for the first response and retry once (15 s)
+  on a timeout; segment fetches keep their shorter limits.
+- A temporary failure now returns a FINITE playlist of the shared temporary
+  slate's current segments (at least 3, waiting up to 8 s) ending in
+  #EXT-X-ENDLIST: the notice shows for 6-12 s and the stream ends, so IPTV
+  apps reconnect to the real entry URL (VLC: press play again).
+
 ## 2026-09-27 -- Source failure diagnostics; 503 instead of 502
 
 A viewer opening a private link in Safari got Cloudflare's own "Bad gateway /

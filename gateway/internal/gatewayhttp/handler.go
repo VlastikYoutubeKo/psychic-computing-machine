@@ -310,24 +310,21 @@ func (h *Handler) serveEntry(w http.ResponseWriter, r *http.Request, ap *store.A
 		return
 	}
 	sourcePrivate := h.isSourcePrivate(r.Context(), ap.Stream, sourceEntry)
-	resp, err := h.fetch(context.Background(), sourceEntry, ap.Stream, sourcePrivate, 0)
+	resp, err := h.fetchWithHeaderTimeout(context.Background(), sourceEntry, ap.Stream, sourcePrivate, 0, entryHeaderTimeout)
+	if err != nil && fetchFailureKind(err) == "timeout" {
+		// The first attempt usually wakes a cold source (tuner); retry once.
+		log.Printf("fetching source for stream %d timed out, retrying once", ap.Stream.ID)
+		resp, err = h.fetchWithHeaderTimeout(context.Background(), sourceEntry, ap.Stream, sourcePrivate, 0, entryRetryHeaderTimeout)
+	}
 	if err != nil {
 		log.Printf("fetching source for stream %d failed: %s", ap.Stream.ID, fetchFailureKind(err))
-		if wantsSlate(r) {
-			writeSlatePlaylist(w, r, slate.Temporary)
-			return
-		}
-		h.writeTemporaryHTML(w, r)
+		h.writeTemporaryFailure(w, r)
 		return
 	}
 	if resp.StatusCode >= 400 {
 		resp.Body.Close()
 		log.Printf("source for stream %d returned HTTP %d", ap.Stream.ID, resp.StatusCode)
-		if wantsSlate(r) {
-			writeSlatePlaylist(w, r, slate.Temporary)
-			return
-		}
-		h.writeTemporaryHTML(w, r)
+		h.writeTemporaryFailure(w, r)
 		return
 	}
 	if !h.sniffAndServe(w, resp, resp.Request.URL, prefix, ap, true) {
@@ -365,9 +362,21 @@ func (h *Handler) serveResource(w http.ResponseWriter, r *http.Request, ap *stor
 // project's first live end-to-end test (see checkFetchTarget). See
 // SECURITY.md.
 func (h *Handler) fetch(ctx context.Context, target *url.URL, s store.Stream, sourcePrivate bool, timeout time.Duration) (*http.Response, error) {
+	return h.fetchWithHeaderTimeout(ctx, target, s, sourcePrivate, timeout, 0)
+}
+
+// fetchWithHeaderTimeout lets entry fetches wait longer for response headers
+// than the shared transport's 10 s: a cold Tvheadend source first tunes the
+// channel and routinely needs more than that before answering.
+func (h *Handler) fetchWithHeaderTimeout(ctx context.Context, target *url.URL, s store.Stream, sourcePrivate bool, timeout, headerTimeout time.Duration) (*http.Response, error) {
+	transport := h.Transport
+	if headerTimeout > 0 && transport != nil && transport.ResponseHeaderTimeout != headerTimeout {
+		transport = transport.Clone()
+		transport.ResponseHeaderTimeout = headerTimeout
+	}
 	client := &http.Client{
 		Timeout:   timeout,
-		Transport: h.Transport,
+		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 5 {
 				return fmt.Errorf("%w: stopped after 5 redirects", errBlockedTarget)
@@ -395,6 +404,14 @@ func (h *Handler) fetch(ctx context.Context, target *url.URL, s store.Stream, so
 	}
 	return client.Do(req)
 }
+
+// Entry fetches: generous wait for the first response from a cold source,
+// then one shorter retry. Cloudflare's own origin timeout is 100 s. Vars so
+// tests can shorten them.
+var (
+	entryHeaderTimeout      = 25 * time.Second
+	entryRetryHeaderTimeout = 15 * time.Second
+)
 
 const (
 	sniffLimit      = 1024            // enough for three TS packet sync bytes; avoids waiting for a 64 KiB live prefix
@@ -757,4 +774,84 @@ func serveNotice(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "image/png")
 	w.Header().Set("Cache-Control", "public, max-age=86400")
 	http.ServeContent(w, r, "notice.png", time.Time{}, bytes.NewReader(noticePNG))
+}
+
+// writeTemporaryFailure answers an entry request whose source is down right
+// now. Players get a FINITE playlist of the shared temporary slate's current
+// segments ending in #EXT-X-ENDLIST: they show the notice for ~12 s and the
+// stream ends, so IPTV apps reconnect to the real entry URL (and VLC can
+// just press play) instead of being parked on an endless slate stream that
+// never re-asks the source. Browsers get the 503 page.
+func (h *Handler) writeTemporaryFailure(w http.ResponseWriter, r *http.Request) {
+	if !wantsSlate(r) {
+		h.writeTemporaryHTML(w, r)
+		return
+	}
+	body, err := h.finiteTemporarySlate()
+	if err != nil {
+		log.Printf("temporary slate unavailable: %v", err)
+		w.Header().Set("Retry-After", "10")
+		http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	if r.Method != http.MethodHead {
+		_, _ = io.WriteString(w, body)
+	}
+}
+
+// Wait until the shared temporary slate has a few segments (a fresh session
+// has just one): the notice then shows for ~6 s+, and a player stuck on a
+// dead source reconnects at a sane pace instead of every 2 s.
+var (
+	finiteSlateMinSegments = 3
+	finiteSlateMaxWait     = 8 * time.Second
+)
+
+func (h *Handler) finiteTemporarySlate() (string, error) {
+	base, reason := slateRouteParts(slate.Temporary)
+	deadline := time.Now().Add(finiteSlateMaxWait)
+	for {
+		body, segments, err := h.readFiniteSlate(base, reason)
+		if err != nil {
+			return "", err
+		}
+		if segments >= finiteSlateMinSegments || time.Now().After(deadline) {
+			if segments == 0 {
+				return "", errors.New("temporary slate has no segments yet")
+			}
+			return body, nil
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+func (h *Handler) readFiniteSlate(base, reason string) (string, int, error) {
+	p, err := h.Slate.GetPath(base+":"+reason, "", "index.m3u8")
+	if err != nil {
+		return "", 0, err
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return "", 0, err
+	}
+	prefix := "/_sv/slate/" + base + "/" + reason + "/"
+	var out strings.Builder
+	segments := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case line == "" || line == "#EXT-X-ENDLIST":
+			continue
+		case strings.HasPrefix(line, "#"):
+			out.WriteString(line + "\n")
+		case slate.ValidName(line) && line != "index.m3u8":
+			out.WriteString(prefix + line + "\n")
+			segments++
+		}
+	}
+	out.WriteString("#EXT-X-ENDLIST\n")
+	return out.String(), segments, nil
 }

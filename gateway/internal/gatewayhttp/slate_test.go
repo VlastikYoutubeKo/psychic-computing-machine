@@ -1,11 +1,13 @@
 package gatewayhttp
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -166,6 +168,9 @@ func TestDisabledAndExpiredEntriesSelectUnavailableSlate(t *testing.T) {
 }
 
 func TestUpstreamFailureSelectsTemporarySlateForPlayersOnly(t *testing.T) {
+	oldMin := finiteSlateMinSegments
+	finiteSlateMinSegments = 1
+	defer func() { finiteSlateMinSegments = oldMin }()
 	h, db := newTestHandler(t)
 	f := installFakeSlate(t, h)
 	src := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -178,16 +183,21 @@ func TestUpstreamFailureSelectsTemporarySlateForPlayersOnly(t *testing.T) {
 	}
 
 	player := slateRequest(t, h, "GET", "/live/down.m3u8", "*/*")
-	if player.Code != 200 || !strings.Contains(player.Body.String(), "/_sv/slate/temporarily-unavailable/temporarily_unavailable/index.m3u8") {
-		t.Fatalf("player on upstream failure: %d %s", player.Code, player.Body.String())
+	// A FINITE playlist of the shared temporary slate's segments, ending in
+	// ENDLIST, so the player drops back to the entry URL instead of being
+	// parked on an endless slate stream.
+	pb := player.Body.String()
+	if player.Code != 200 || !strings.Contains(pb, "/_sv/slate/temporarily-unavailable/temporarily_unavailable/seg000001.ts") || !strings.Contains(pb, "#EXT-X-ENDLIST") || strings.Contains(pb, "index.m3u8") {
+		t.Fatalf("player on upstream failure: %d %s", player.Code, pb)
 	}
+	callsAfterPlayer := f.calls
 	browser := slateRequest(t, h, "GET", "/live/down.m3u8", "text/html")
 	// 503 (not 502) so Cloudflare passes our page through instead of its own.
 	if browser.Code != http.StatusServiceUnavailable || browser.Header().Get("Retry-After") == "" || !strings.Contains(browser.Body.String(), "Source cooling down") || !strings.Contains(browser.Body.String(), "Please retry soon.") {
 		t.Fatalf("browser on upstream failure: %d %s", browser.Code, browser.Body.String())
 	}
-	if f.calls != 0 {
-		t.Fatal("entry response must not touch the slate encoder")
+	if callsAfterPlayer != 1 || f.calls != 1 {
+		t.Fatalf("player should read the shared temporary slate once and the browser not at all: %d/%d", callsAfterPlayer, f.calls)
 	}
 }
 
@@ -228,5 +238,31 @@ func TestNoticeImageIsServedWithoutAccessPointLookup(t *testing.T) {
 	got := slateRequest(t, h, "GET", "/_sv/notice.png", "")
 	if got.Code != 200 || got.Header().Get("Content-Type") != "image/png" || !strings.HasPrefix(got.Body.String(), "\x89PNG") {
 		t.Fatalf("notice: %d %s", got.Code, got.Header().Get("Content-Type"))
+	}
+}
+
+func TestColdSourceEntryIsRetriedOnceAfterHeaderTimeout(t *testing.T) {
+	oldFirst, oldRetry := entryHeaderTimeout, entryRetryHeaderTimeout
+	entryHeaderTimeout, entryRetryHeaderTimeout = 200*time.Millisecond, 2*time.Second
+	defer func() { entryHeaderTimeout, entryRetryHeaderTimeout = oldFirst, oldRetry }()
+
+	h, db := newTestHandler(t)
+	installFakeSlate(t, h)
+	var hits atomic.Int32
+	src := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if hits.Add(1) == 1 {
+			time.Sleep(600 * time.Millisecond) // cold tuner: slower than the first header timeout
+		}
+		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+		io.WriteString(w, "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:2,\nlive000.ts\n")
+	}))
+	defer src.Close()
+	seedStream(t, db, src.URL+"/index.m3u8", "live/cold", "public")
+	got := slateRequest(t, h, "GET", "/live/cold.m3u8", "*/*")
+	if got.Code != 200 || !strings.Contains(got.Body.String(), "/live/cold/r/") || strings.Contains(got.Body.String(), "_sv/slate") {
+		t.Fatalf("cold source should be served after one retry, got %d %s", got.Code, got.Body.String())
+	}
+	if hits.Load() != 2 {
+		t.Fatalf("expected exactly one retry (2 source hits), got %d", hits.Load())
 	}
 }
