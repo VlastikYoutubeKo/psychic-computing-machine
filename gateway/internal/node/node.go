@@ -56,7 +56,12 @@ type Node struct {
 	runtime       map[int64]nodeproto.StreamStatus
 	viewers       map[int64]map[string]time.Time
 	haveConfig    bool
+	lastConfigAt  time.Time
 }
+
+const configMaxAge = 5 * time.Minute
+
+var errConfigUnauthorized = errors.New("control plane rejected node credentials")
 
 // New validates the configuration without starting anything.
 func New(cfg Config) (*Node, error) {
@@ -153,9 +158,10 @@ func (n *Node) request(ctx context.Context, method, path string, body io.Reader)
 
 func (n *Node) pollLoop(ctx context.Context) {
 	for {
-		if err := n.pollOnce(ctx); err != nil && ctx.Err() == nil {
+		if err := n.pollOnce(ctx); err != nil && ctx.Err() == nil && !errors.Is(err, errConfigUnauthorized) {
 			log.Printf("node: config poll failed (keeping last config): %v", err)
 		}
+		n.expireConfig(time.Now())
 		n.mu.RLock()
 		wait := n.pollEvery
 		n.mu.RUnlock()
@@ -173,6 +179,10 @@ func (n *Node) pollOnce(ctx context.Context) error {
 		return errors.New("control plane unreachable")
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		n.clearConfig("control plane rejected node credentials")
+		return errConfigUnauthorized
+	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("control plane returned HTTP %d", resp.StatusCode)
 	}
@@ -213,8 +223,37 @@ func (n *Node) apply(cfg nodeproto.Config) {
 	n.mu.Lock()
 	n.streams, n.assigned = streams, assigned
 	n.revokedAPs, n.revokedTokens = toSet(cfg.RevokedAccessPoints), toSet(cfg.RevokedTokens)
-	n.pollEvery, n.haveConfig = poll, true
+	n.pollEvery, n.haveConfig, n.lastConfigAt = poll, true, time.Now()
 	n.mu.Unlock()
+}
+
+// clearConfig fails closed. The relay supervisor sees no assigned streams on
+// its next reconciliation and unpins them; direct viewer requests fail now.
+func (n *Node) clearConfig(reason string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.clearConfigLocked(reason)
+}
+
+func (n *Node) clearConfigLocked(reason string) {
+	if !n.haveConfig {
+		return // Log only the transition, even if every later poll is rejected.
+	}
+	n.streams = nil
+	n.assigned = map[int64]bool{}
+	n.revokedAPs = map[int64]bool{}
+	n.revokedTokens = map[int64]bool{}
+	n.viewers = map[int64]map[string]time.Time{}
+	n.haveConfig = false
+	log.Printf("node: cleared assignments: %s", reason)
+}
+
+func (n *Node) expireConfig(now time.Time) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.haveConfig && now.Sub(n.lastConfigAt) >= configMaxAge {
+		n.clearConfigLocked("last successful config poll is too old")
+	}
 }
 
 func (n *Node) statusLoop(ctx context.Context) {
@@ -271,6 +310,7 @@ func (n *Node) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	n.expireConfig(time.Now())
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/"), "/")
 	if len(parts) != 3 || parts[0] != "n" {
 		http.NotFound(w, r)

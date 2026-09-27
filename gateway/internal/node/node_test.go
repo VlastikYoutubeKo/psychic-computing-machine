@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -17,6 +18,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -47,6 +49,94 @@ func freePort(t *testing.T) string {
 	}
 	defer l.Close()
 	return l.Addr().String()
+}
+
+func newPollingNode(t *testing.T) (*Node, *atomic.Int32) {
+	t.Helper()
+	var status atomic.Int32
+	status.Store(http.StatusOK)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(int(status.Load()))
+		if status.Load() == http.StatusOK {
+			_, _ = io.WriteString(w, `{"node_id":1,"poll_seconds":10,"streams":[{"id":42,"source_type":"hls","source_url":"https://example.test/live.m3u8"}]}`)
+		}
+	}))
+	t.Cleanup(server.Close)
+	n, err := New(Config{ControlURL: server.URL, Token: "svn_1_" + strings.Repeat("a", 64), Listen: "127.0.0.1:0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(n.h.Remux.Close)
+	return n, &status
+}
+
+func TestUnauthorizedPollClearsAndSuccessfulPollRestores(t *testing.T) {
+	n, status := newPollingNode(t)
+	if err := n.pollOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !n.assigned[42] {
+		t.Fatal("initial assignment missing")
+	}
+	status.Store(http.StatusUnauthorized)
+	if err := n.pollOnce(context.Background()); !errors.Is(err, errConfigUnauthorized) {
+		t.Fatalf("expected credential error, got %v", err)
+	}
+	if n.haveConfig || n.assigned[42] || len(n.streams) != 0 {
+		t.Fatal("401 left stale assignments")
+	}
+	if streams, err := n.AlwaysOnStreams(); err != nil || len(streams) != 0 {
+		t.Fatalf("relay supervisor still sees assignments: %v, %v", streams, err)
+	}
+	// A direct signed viewer request must be rejected while the old config is gone.
+	exp := time.Now().Add(time.Minute).Unix()
+	u := fmt.Sprintf("/n/42/index.m3u8?ap=0&tok=0&exp=%d&sig=%s", exp, nodeproto.Sign(n.secret, 42, 0, 0, exp))
+	w := httptest.NewRecorder()
+	n.ServeHTTP(w, httptest.NewRequest(http.MethodGet, u, nil))
+	if w.Code != http.StatusGone {
+		t.Fatalf("stale viewer access: HTTP %d", w.Code)
+	}
+	status.Store(http.StatusOK)
+	if err := n.pollOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !n.haveConfig || !n.assigned[42] {
+		t.Fatal("successful poll did not restore assignments")
+	}
+}
+
+func TestForbiddenPollClears(t *testing.T) {
+	n, status := newPollingNode(t)
+	if err := n.pollOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	status.Store(http.StatusForbidden)
+	if err := n.pollOnce(context.Background()); !errors.Is(err, errConfigUnauthorized) {
+		t.Fatalf("expected credential error, got %v", err)
+	}
+	if n.haveConfig || n.assigned[42] {
+		t.Fatal("403 left stale assignments")
+	}
+}
+
+func TestStaleConfigClearsAndLaterPollRestores(t *testing.T) {
+	n, _ := newPollingNode(t)
+	if err := n.pollOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	n.mu.Lock()
+	n.lastConfigAt = time.Now().Add(-configMaxAge - time.Second)
+	n.mu.Unlock()
+	n.expireConfig(time.Now())
+	if n.haveConfig || n.assigned[42] {
+		t.Fatal("expired config left stale assignments")
+	}
+	if err := n.pollOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !n.haveConfig || !n.assigned[42] {
+		t.Fatal("fresh poll did not restore assignments")
+	}
 }
 
 // End to end: control gateway + running node + live HLS source + real ffmpeg.

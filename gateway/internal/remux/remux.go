@@ -51,8 +51,22 @@ type Manager struct {
 	mu       sync.Mutex
 	sessions map[int64]*Session
 	byID     map[string]*Session
+	pending  map[int64]map[*pendingOpen]struct{}
 	closed   chan struct{}
 	slots    chan struct{}
+}
+
+type pendingOpen struct{ cancel context.CancelFunc }
+
+type closeOnceReadCloser struct {
+	io.ReadCloser
+	once sync.Once
+}
+
+func (r *closeOnceReadCloser) Close() error {
+	var err error
+	r.once.Do(func() { err = r.ReadCloser.Close() })
+	return err
 }
 
 // Slots is the total number of concurrent remux/relay sessions.
@@ -104,13 +118,16 @@ func (m *Manager) Current(streamID int64) *Session {
 func (m *Manager) Stop(streamID int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	for p := range m.pending[streamID] {
+		p.cancel()
+	}
 	if s := m.sessions[streamID]; s != nil {
 		m.stopLocked(s)
 	}
 }
 
 func NewManager() *Manager {
-	m := &Manager{sessions: make(map[int64]*Session), byID: make(map[string]*Session), closed: make(chan struct{}), slots: make(chan struct{}, slotsFromEnv())}
+	m := &Manager{sessions: make(map[int64]*Session), byID: make(map[string]*Session), pending: make(map[int64]map[*pendingOpen]struct{}), closed: make(chan struct{}), slots: make(chan struct{}, slotsFromEnv())}
 	go func() {
 		tick := time.NewTicker(30 * time.Second)
 		defer tick.Stop()
@@ -150,11 +167,17 @@ func (m *Manager) Existing(streamID int64, signature string) *Session {
 // manifest request that triggered format detection.
 func (m *Manager) Start(streamID int64, signature string, open func(context.Context) (io.ReadCloser, error)) (*Session, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	select {
+	case <-m.closed:
+		m.mu.Unlock()
+		return nil, errors.New("remux manager closed")
+	default:
+	}
 	if s := m.sessions[streamID]; s != nil {
 		if s.Signature == signature {
 			if _, err := os.Stat(filepath.Join(s.Dir, "index.m3u8")); err == nil {
 				s.lastUsed = time.Now()
+				m.mu.Unlock()
 				return s, nil
 			}
 			select {
@@ -162,6 +185,7 @@ func (m *Manager) Start(streamID int64, signature string, open func(context.Cont
 				m.stopLocked(s)
 			default:
 				s.lastUsed = time.Now()
+				m.mu.Unlock()
 				return s, nil
 			}
 		} else {
@@ -171,11 +195,35 @@ func (m *Manager) Start(streamID int64, signature string, open func(context.Cont
 	select {
 	case m.slots <- struct{}{}:
 	default:
+		m.mu.Unlock()
 		return nil, errors.New("remux session limit reached")
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	p := &pendingOpen{cancel: cancel}
+	if m.pending[streamID] == nil {
+		m.pending[streamID] = make(map[*pendingOpen]struct{})
+	}
+	m.pending[streamID][p] = struct{}{}
+	m.mu.Unlock()
+
 	started := false
+	var body io.ReadCloser
+	var dir string
 	defer func() {
+		m.mu.Lock()
+		delete(m.pending[streamID], p)
+		if len(m.pending[streamID]) == 0 {
+			delete(m.pending, streamID)
+		}
+		m.mu.Unlock()
 		if !started {
+			cancel()
+			if body != nil {
+				_ = body.Close()
+			}
+			if dir != "" {
+				_ = os.RemoveAll(dir)
+			}
 			<-m.slots
 		}
 	}()
@@ -184,16 +232,34 @@ func (m *Manager) Start(streamID int64, signature string, open func(context.Cont
 		return nil, err
 	}
 	id := hex.EncodeToString(idBytes[:])
-	dir, err := os.MkdirTemp("", "streamvault-remux-")
+	var err error
+	dir, err = os.MkdirTemp("", "streamvault-remux-")
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	body, err := open(ctx)
+	body, err = open(ctx)
 	if err != nil {
-		cancel()
-		os.RemoveAll(dir)
 		return nil, err
+	}
+	if body == nil {
+		return nil, errors.New("remux source returned no body")
+	}
+	body = &closeOnceReadCloser{ReadCloser: body}
+	m.mu.Lock()
+	select {
+	case <-ctx.Done():
+		m.mu.Unlock()
+		return nil, errors.New("remux start cancelled")
+	case <-m.closed:
+		m.mu.Unlock()
+		return nil, errors.New("remux manager closed")
+	default:
+	}
+	if s := m.sessions[streamID]; s != nil {
+		// Another opener won this stream while this one was fetching.
+		s.lastUsed = time.Now()
+		m.mu.Unlock()
+		return s, nil
 	}
 	cmd := exec.CommandContext(ctx, "ffmpeg", "-hide_banner", "-loglevel", "error",
 		"-f", "mpegts", "-i", "pipe:0", "-map", "0:v?", "-map", "0:a?", "-c", "copy",
@@ -201,18 +267,19 @@ func (m *Manager) Start(streamID int64, signature string, open func(context.Cont
 		"-hls_flags", "delete_segments+omit_endlist",
 		"-hls_segment_filename", filepath.Join(dir, "seg%06d.ts"), filepath.Join(dir, "index.m3u8"))
 	cmd.Stdin = body
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	if err := cmd.Start(); err != nil {
-		body.Close()
-		cancel()
-		os.RemoveAll(dir)
+		m.mu.Unlock()
 		return nil, fmt.Errorf("starting ffmpeg: %w", err)
 	}
+	context.AfterFunc(ctx, func() { _ = body.Close() })
 	started = true
 	s := &Session{ID: id, StreamID: streamID, Signature: signature, Dir: dir, cmd: cmd, cancel: cancel, lastUsed: time.Now(), done: make(chan struct{})}
 	m.sessions[streamID] = s
 	m.byID[id] = s
+	m.mu.Unlock()
 	go m.watch(s, body)
 	return s, nil
 }
@@ -224,6 +291,11 @@ func (m *Manager) Close() {
 	default:
 		close(m.closed)
 	}
+	for _, opens := range m.pending {
+		for p := range opens {
+			p.cancel()
+		}
+	}
 	for _, s := range m.sessions {
 		m.stopLocked(s)
 	}
@@ -232,8 +304,9 @@ func (m *Manager) Close() {
 
 func (m *Manager) watch(s *Session, body io.ReadCloser) {
 	_ = s.cmd.Wait()
-	<-m.slots
+	s.cancel()
 	_ = body.Close()
+	<-m.slots
 	close(s.done)
 	// Keep completed segments available until idle expiry: a finite TS input
 	// may finish before the client has requested its first segment.
