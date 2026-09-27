@@ -92,7 +92,7 @@ func (h *Handler) serveNodeConfig(w http.ResponseWriter, n *store.Node, secret s
 		Streams: []nodeproto.StreamConfig{}, RevokedAccessPoints: aps, RevokedTokens: tokens}
 	cfgKey := nodeproto.ConfigKey(secret)
 	for _, st := range streams {
-		sc := nodeproto.StreamConfig{ID: st.ID, SourceType: st.SourceType, SourceURL: st.SourceURL}
+		sc := nodeproto.StreamConfig{ID: st.ID, SourceType: st.SourceType, SourceURL: st.SourceURL, TrustPrivateSource: st.TrustPrivateSource}
 		if st.SourceUsername.Valid && st.SourcePasswordEnc.Valid {
 			if h.Key == nil {
 				log.Printf("node %d: stream %d needs credentials but no key is loaded", n.ID, st.ID)

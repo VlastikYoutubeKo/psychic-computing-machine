@@ -86,9 +86,33 @@ func NewRelayOnly(key []byte, relays RelayStore) *Handler {
 	}
 }
 
+// publicOnlyKey marks a fetch for a stream whose source is NOT trusted to be
+// on a private network (regular accounts). The dialer then refuses to keep a
+// connection to a private/reserved address -- checked on the address actually
+// connected to, so DNS rebinding between a check and the dial can't bypass it.
+type publicOnlyKey struct{}
+
+func publicOnly(ctx context.Context) context.Context {
+	return context.WithValue(ctx, publicOnlyKey{}, true)
+}
+
+func sourceDialContext(d *net.Dialer) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		conn, err := d.DialContext(ctx, network, addr)
+		if err != nil || ctx.Value(publicOnlyKey{}) == nil {
+			return conn, err
+		}
+		if tcp, ok := conn.RemoteAddr().(*net.TCPAddr); !ok || isPrivateOrReserved(tcp.IP) {
+			conn.Close()
+			return nil, fmt.Errorf("%w: source resolves to a private/reserved address", errBlockedTarget)
+		}
+		return conn, nil
+	}
+}
+
 func newSourceTransport() *http.Transport {
 	return &http.Transport{
-		DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		DialContext:           sourceDialContext(&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}),
 		TLSHandshakeTimeout:   5 * time.Second,
 		ResponseHeaderTimeout: 10 * time.Second,
 		IdleConnTimeout:       60 * time.Second,
@@ -127,6 +151,12 @@ func New(st *store.Store, key []byte) (*Handler, error) {
 // doesn't cost a DNS lookup on every segment request -- see
 // checkFetchTarget's doc comment for what this decision gates.
 func (h *Handler) isSourcePrivate(ctx context.Context, s store.Stream, sourceEntry *url.URL) bool {
+	// Only admin-owned (or ownerless) streams may point at private networks:
+	// a regular account setting source_url to an internal service must not
+	// turn the gateway into a reader of that service.
+	if !s.TrustPrivateSource {
+		return false
+	}
 	h.sourceTrustMu.Lock()
 	if e, ok := h.sourceTrustCache[s.ID]; ok && time.Since(e.checkedAt) < sourceTrustCacheTTL {
 		h.sourceTrustMu.Unlock()
@@ -413,6 +443,9 @@ func (h *Handler) fetch(ctx context.Context, target *url.URL, s store.Stream, so
 // than the shared transport's 10 s: a cold Tvheadend source first tunes the
 // channel and routinely needs more than that before answering.
 func (h *Handler) fetchWithHeaderTimeout(ctx context.Context, target *url.URL, s store.Stream, sourcePrivate bool, timeout, headerTimeout time.Duration) (*http.Response, error) {
+	if !s.TrustPrivateSource {
+		ctx = publicOnly(ctx) // entry, redirects, resources and HLS pulls alike
+	}
 	transport := h.Transport
 	if headerTimeout > 0 && transport != nil && transport.ResponseHeaderTimeout != headerTimeout {
 		transport = transport.Clone()

@@ -191,7 +191,7 @@ func (n *Node) apply(cfg nodeproto.Config) {
 	streams := make([]store.Stream, 0, len(cfg.Streams))
 	assigned := map[int64]bool{}
 	for _, sc := range cfg.Streams {
-		st := store.Stream{ID: sc.ID, SourceType: sc.SourceType, SourceURL: sc.SourceURL, Status: "active", AllowRemux: true}
+		st := store.Stream{ID: sc.ID, SourceType: sc.SourceType, SourceURL: sc.SourceURL, Status: "active", AllowRemux: true, TrustPrivateSource: sc.TrustPrivateSource}
 		if sc.SourceUsername != "" && sc.SourcePasswordEnc != "" {
 			st.SourceUsername.String, st.SourceUsername.Valid = sc.SourceUsername, true
 			st.SourcePasswordEnc.String, st.SourcePasswordEnc.Valid = sc.SourcePasswordEnc, true

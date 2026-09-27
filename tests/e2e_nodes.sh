@@ -84,7 +84,7 @@ curl -s -c "$(jar bob)" -b "$(jar bob)" -o /dev/null "$A/$INV"
 t=$(csrf bob accept_invite.php); curl -s -c "$(jar bob)" -b "$(jar bob)" -o /dev/null --data-urlencode "csrf=$t" --data-urlencode password=bob-password-123 --data-urlencode password_confirm=bob-password-123 "$A/accept_invite.php"
 login bob bob-password-123 >/dev/null
 check "non-admin gets 403 on nodes.php" 403 "$(get bob nodes.php)"
-post bob stream_form.php name=bobs source_type=hls source_url=https://src.example/b.m3u8 replacement_reason=unauthorized_redistribution "node_id=$NODE_ID" >/dev/null
+post bob stream_form.php name=bobs source_type=hls source_url=https://1.1.1.1/b.m3u8 replacement_reason=unauthorized_redistribution "node_id=$NODE_ID" >/dev/null
 check "non-admin cannot assign a node (forged POST)" "" "$(q "SELECT IFNULL(node_id,'') FROM streams WHERE name='bobs'")"
 
 post admin nodes.php action=reissue "node_id=$NODE_ID" >/dev/null

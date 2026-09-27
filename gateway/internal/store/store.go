@@ -90,6 +90,10 @@ type Stream struct {
 	ReplacementReason  string
 	ReplacementMessage sql.NullString
 	AllowRemux         bool
+	// TrustPrivateSource: the source may live on a private/internal network
+	// (admin-owned or ownerless streams only). Streams of regular accounts
+	// are restricted to public addresses (see gatewayhttp source dialer).
+	TrustPrivateSource bool
 	Node               *NodeRef // non-nil when the stream is assigned to a relay node
 }
 
@@ -125,6 +129,7 @@ func (s *Store) ResolveAccessPoint(publicPath string) (*AccessPoint, error) {
 		       st.id, st.name, st.source_type, st.source_url, st.source_username,
 		       st.source_password_enc, st.status, st.disabled_at, st.replacement_reason, st.replacement_message,
 		       CASE WHEN owner.role = 'user' THEN owner.allow_remux ELSE 1 END,
+		       CASE WHEN owner.id IS NULL OR owner.role = 'admin' THEN 1 ELSE 0 END,
 		       n.id, n.public_url, n.secret_enc, n.status, n.last_seen_at
 		FROM access_points ap
 		JOIN streams st ON st.id = ap.stream_id
@@ -133,14 +138,14 @@ func (s *Store) ResolveAccessPoint(publicPath string) (*AccessPoint, error) {
 		WHERE ap.public_path = ?`, publicPath)
 
 	var ap AccessPoint
-	var allowRemux int
+	var allowRemux, trustPrivate int
 	var nodeID sql.NullInt64
 	var nodeURL, nodeSecret, nodeStatus, nodeSeen sql.NullString
 	if err := row.Scan(
 		&ap.ID, &ap.StreamID, &ap.PublicPath, &ap.Visibility, &ap.OutputFormat, &ap.Status, &ap.RevokedAt,
 		&ap.Stream.ID, &ap.Stream.Name, &ap.Stream.SourceType, &ap.Stream.SourceURL,
 		&ap.Stream.SourceUsername, &ap.Stream.SourcePasswordEnc, &ap.Stream.Status, &ap.Stream.DisabledAt,
-		&ap.Stream.ReplacementReason, &ap.Stream.ReplacementMessage, &allowRemux,
+		&ap.Stream.ReplacementReason, &ap.Stream.ReplacementMessage, &allowRemux, &trustPrivate,
 		&nodeID, &nodeURL, &nodeSecret, &nodeStatus, &nodeSeen,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -149,6 +154,7 @@ func (s *Store) ResolveAccessPoint(publicPath string) (*AccessPoint, error) {
 		return nil, err
 	}
 	ap.Stream.AllowRemux = allowRemux != 0
+	ap.Stream.TrustPrivateSource = trustPrivate != 0
 	if nodeID.Valid {
 		ap.Stream.Node = &NodeRef{ID: nodeID.Int64, PublicURL: nodeURL.String, SecretEnc: nodeSecret.String, Status: nodeStatus.String, LastSeenAt: nodeSeen}
 	}
@@ -217,10 +223,13 @@ func (s *Store) TouchToken(tokenID int64) {
 func (s *Store) AlwaysOnStreams() ([]Stream, error) {
 	rows, err := s.db.Query(`
 		SELECT st.id, st.name, st.source_type, st.source_url, st.source_username,
-		       st.source_password_enc, st.status, st.disabled_at, st.replacement_reason, st.replacement_message
+		       st.source_password_enc, st.status, st.disabled_at, st.replacement_reason, st.replacement_message,
+		       CASE WHEN owner.id IS NULL OR owner.role = 'admin' THEN 1 ELSE 0 END
 		FROM streams st
 		LEFT JOIN operators owner ON owner.id = st.owner_id
-		WHERE st.always_on = 1 AND st.status = 'active'
+		-- node_id IS NULL: a stream assigned to a relay node is relayed there,
+		-- not also here (that would cost a local slot and a second source pull).
+		WHERE st.always_on = 1 AND st.status = 'active' AND st.node_id IS NULL
 		  AND (owner.id IS NULL OR owner.role = 'admin'
 		       OR (owner.status = 'active' AND owner.allow_always_on = 1 AND owner.allow_remux = 1))
 		ORDER BY st.id`)
@@ -231,11 +240,12 @@ func (s *Store) AlwaysOnStreams() ([]Stream, error) {
 	var out []Stream
 	for rows.Next() {
 		var st Stream
+		var trust int
 		if err := rows.Scan(&st.ID, &st.Name, &st.SourceType, &st.SourceURL, &st.SourceUsername,
-			&st.SourcePasswordEnc, &st.Status, &st.DisabledAt, &st.ReplacementReason, &st.ReplacementMessage); err != nil {
+			&st.SourcePasswordEnc, &st.Status, &st.DisabledAt, &st.ReplacementReason, &st.ReplacementMessage, &trust); err != nil {
 			return nil, err
 		}
-		st.AllowRemux = true
+		st.AllowRemux, st.TrustPrivateSource = true, trust != 0
 		out = append(out, st)
 	}
 	return out, rows.Err()
@@ -289,9 +299,11 @@ func (s *Store) NodeByID(id int64) (*Node, error) {
 // NodeStreams are the active streams assigned to a node.
 func (s *Store) NodeStreams(nodeID int64) ([]Stream, error) {
 	rows, err := s.db.Query(`
-		SELECT id, name, source_type, source_url, source_username, source_password_enc,
-		       status, disabled_at, replacement_reason, replacement_message
-		FROM streams WHERE node_id = ? AND status = 'active' ORDER BY id`, nodeID)
+		SELECT st.id, st.name, st.source_type, st.source_url, st.source_username, st.source_password_enc,
+		       st.status, st.disabled_at, st.replacement_reason, st.replacement_message,
+		       CASE WHEN owner.id IS NULL OR owner.role = 'admin' THEN 1 ELSE 0 END
+		FROM streams st LEFT JOIN operators owner ON owner.id = st.owner_id
+		WHERE st.node_id = ? AND st.status = 'active' ORDER BY st.id`, nodeID)
 	if err != nil {
 		return nil, err
 	}
@@ -299,11 +311,12 @@ func (s *Store) NodeStreams(nodeID int64) ([]Stream, error) {
 	var out []Stream
 	for rows.Next() {
 		var st Stream
+		var trust int
 		if err := rows.Scan(&st.ID, &st.Name, &st.SourceType, &st.SourceURL, &st.SourceUsername,
-			&st.SourcePasswordEnc, &st.Status, &st.DisabledAt, &st.ReplacementReason, &st.ReplacementMessage); err != nil {
+			&st.SourcePasswordEnc, &st.Status, &st.DisabledAt, &st.ReplacementReason, &st.ReplacementMessage, &trust); err != nil {
 			return nil, err
 		}
-		st.AllowRemux = true
+		st.AllowRemux, st.TrustPrivateSource = true, trust != 0
 		out = append(out, st)
 	}
 	return out, rows.Err()

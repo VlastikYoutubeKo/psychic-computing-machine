@@ -59,7 +59,7 @@ check "alice login" 302 "$(login alice alice-password-1234)"
 check "bob login" 302 "$(login bob bob-password-12345)"
 
 # --- each user creates a stream, access point and token -----------------
-mkstream(){ post "$1" stream_form.php "name=$2" source_type=hls "source_url=https://src.example/$2.m3u8" replacement_reason=unauthorized_redistribution >/dev/null; q "SELECT id FROM streams WHERE name='$2'"; }
+mkstream(){ post "$1" stream_form.php "name=$2" source_type=hls "source_url=https://1.1.1.1/$2.m3u8" replacement_reason=unauthorized_redistribution >/dev/null; q "SELECT id FROM streams WHERE name='$2'"; }
 A_S=$(mkstream alice alice-stream); B_S=$(mkstream bob bob-stream)
 [ -n "$A_S" ] && [ -n "$B_S" ] && ok "users created streams" || bad "stream creation"
 check "alice owns her stream" "$(q "SELECT id FROM operators WHERE username='alice'")" "$(q "SELECT owner_id FROM streams WHERE id=$A_S")"
@@ -124,17 +124,25 @@ check "stream limit (2) enforced" 2 "$(q "SELECT COUNT(*) FROM streams WHERE own
 for p in a2 a3 a4; do post alice "stream_view.php?id=$A_S" action=add_access_point "public_path=alice-$p" visibility=public >/dev/null; done
 check "access point limit (3) enforced" 3 "$(q "SELECT COUNT(*) FROM access_points ap JOIN streams s ON s.id=ap.stream_id WHERE s.owner_id=(SELECT id FROM operators WHERE username='alice')")"
 
+# --- regular accounts may not point streams at internal services --------------
+for u in "http://127.0.0.1:2019/config/" "http://172.18.0.1:3306/" "http://169.254.169.254/latest/meta-data/"; do
+  post alice stream_form.php name=ssrf-probe source_type=hls "source_url=$u" replacement_reason=unauthorized_redistribution >/dev/null
+done
+check "user cannot save streams with private/internal sources" 0 "$(q "SELECT COUNT(*) FROM streams WHERE name='ssrf-probe'")"
+post alice "stream_form.php?id=$A_S" name=alice-stream source_type=hls source_url=http://127.0.0.1:2019/config/ replacement_reason=unauthorized_redistribution >/dev/null
+check "user cannot switch an existing stream to an internal source" "https://1.1.1.1/alice-stream.m3u8" "$(q "SELECT source_url FROM streams WHERE id=$A_S")"
+
 # --- always-on permission ----------------------------------------------------
-post alice "stream_form.php?id=$A_S" name=alice-stream source_type=hls "source_url=https://src.example/alice-stream.m3u8" replacement_reason=unauthorized_redistribution always_on=1 >/dev/null
+post alice "stream_form.php?id=$A_S" name=alice-stream source_type=hls "source_url=https://1.1.1.1/alice-stream.m3u8" replacement_reason=unauthorized_redistribution always_on=1 >/dev/null
 check "user without permission cannot enable always-on (forged POST ignored)" 0 "$(q "SELECT always_on FROM streams WHERE id=$A_S")"
 ALICE_ID=$(q "SELECT id FROM operators WHERE username='alice'")
 post admin accounts.php action=limits "account_id=$ALICE_ID" max_streams=2 max_access_points=3 allow_remux=1 allow_always_on=1 >/dev/null
 check "admin grants always-on" 1 "$(q "SELECT allow_always_on FROM operators WHERE id=$ALICE_ID")"
-post alice "stream_form.php?id=$A_S" name=alice-stream source_type=hls "source_url=https://src.example/alice-stream.m3u8" replacement_reason=unauthorized_redistribution always_on=1 >/dev/null
+post alice "stream_form.php?id=$A_S" name=alice-stream source_type=hls "source_url=https://1.1.1.1/alice-stream.m3u8" replacement_reason=unauthorized_redistribution always_on=1 >/dev/null
 check "permitted user can enable always-on" 1 "$(q "SELECT always_on FROM streams WHERE id=$A_S")"
 get alice "stream_view.php?id=$A_S" >/dev/null; grep -q "Always on (24/7)" "$WORK/last.html" && ok "stream page shows always-on state" || bad "always-on state missing on stream page"
 post admin accounts.php action=limits "account_id=$ALICE_ID" max_streams=2 max_access_points=3 allow_remux=1 >/dev/null
-post alice "stream_form.php?id=$A_S" name=alice-stream source_type=hls "source_url=https://src.example/alice-stream.m3u8" replacement_reason=unauthorized_redistribution always_on=1 >/dev/null
+post alice "stream_form.php?id=$A_S" name=alice-stream source_type=hls "source_url=https://1.1.1.1/alice-stream.m3u8" replacement_reason=unauthorized_redistribution always_on=1 >/dev/null
 check "withdrawn permission turns always-on off on next save" 0 "$(q "SELECT always_on FROM streams WHERE id=$A_S")"
 
 # --- own leak sources are private -------------------------------------------

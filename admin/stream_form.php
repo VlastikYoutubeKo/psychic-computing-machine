@@ -54,6 +54,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($form['source_url'] === '') {
         $errors[] = 'Source URL is required.';
     }
+    // Regular accounts may only use public sources: the gateway enforces this
+    // at connect time too, but reject it here with a clear message.
+    if ($form['source_url'] !== '' && !sv_is_admin($operator)) {
+        $srcErr = sv_public_source_error($form['source_url']);
+        if ($srcErr !== null) $errors[] = $srcErr;
+    }
     $validTypes = ['restreamer', 'tvheadend', 'hls', 'mpegts', 'generic'];
     if (!in_array($form['source_type'], $validTypes, true)) {
         $errors[] = 'Invalid source type.';

@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-09-27 -- Fixes from Codex's independent review
+
+- Critical: regular accounts could point source_url at internal services
+  (Caddy admin API, other containers) and read them through their access
+  point, because a private source was trusted. Private sources are now
+  trusted only for admin-owned/ownerless streams; all other streams are
+  dialed public-only, checked on the address actually connected to (entry,
+  redirects, resources, HLS pulls, and on nodes via trust_private_source in
+  the node config), and the admin rejects private/internal source URLs for
+  regular accounts on save.
+- Always-on streams assigned to a node are no longer also relayed locally.
+- A relay that dies within 2 minutes of starting counts as a failure, so the
+  exponential backoff can't be bypassed by a flapping source.
+- (Codex) Nodes drop their assignments on 401/403 and after 5 minutes without
+  a successful config poll (fail closed). Remux no longer holds the manager
+  lock while opening a source; cancelling a session closes the source body
+  and WaitDelay bounds the wait for ffmpeg.
+
 ## 2026-09-27 -- Nodes serve through the main domain (no redirects)
 
 At the owner's request everything stays on rest.iptvlookup.com: instead of

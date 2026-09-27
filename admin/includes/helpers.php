@@ -59,3 +59,33 @@ function sv_token_display(string $raw): string
 {
     return substr($raw, 0, 8);
 }
+
+/**
+ * For streams of regular accounts: the source must be http(s) and resolve
+ * only to public addresses. Returns an error message or null. (Admins may
+ * point streams at private/LAN sources.) The gateway re-checks the address it
+ * actually connects to, so DNS changes after saving don't bypass this.
+ */
+function sv_public_source_error(string $url): ?string
+{
+    $p = parse_url($url);
+    $scheme = strtolower((string) ($p['scheme'] ?? ''));
+    $host = trim((string) ($p['host'] ?? ''), '[]');
+    if (!in_array($scheme, ['http', 'https'], true) || $host === '') {
+        return 'Source URL must be an http(s) URL.';
+    }
+    $ips = filter_var($host, FILTER_VALIDATE_IP) ? [$host] : array_merge(
+        gethostbynamel($host) ?: [],
+        array_column(@dns_get_record($host, DNS_AAAA) ?: [], 'ipv6')
+    );
+    if (!$ips) {
+        return 'Source host could not be resolved.';
+    }
+    foreach ($ips as $ip) {
+        if (!filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)
+            || str_starts_with($ip, '100.') && (int) explode('.', $ip)[1] >= 64 && (int) explode('.', $ip)[1] <= 127) {
+            return 'Source must be a public address; private, local and internal addresses are only allowed for admins.';
+        }
+    }
+    return null;
+}

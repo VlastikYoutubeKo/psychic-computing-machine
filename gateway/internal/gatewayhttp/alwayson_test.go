@@ -121,3 +121,36 @@ func TestAlwaysOnFailureBacksOffWithReadableReason(t *testing.T) {
 		t.Fatalf("retried inside the backoff window (failures=%d)", states[streamID].failures)
 	}
 }
+
+func TestShortLivedRelayCrashCountsAsFailure(t *testing.T) {
+	st := &alwaysOnState{}
+	st.runningSince = time.Now().Add(-10 * time.Second) // came up, then died quickly
+	if time.Since(st.runningSince) >= alwaysOnMinHealthy {
+		t.Fatal("test setup: should be short-lived")
+	}
+	first := st.fail()
+	second := st.fail()
+	if st.failures != 2 || second != 2*first || !st.runningSince.IsZero() {
+		t.Fatalf("backoff must grow across quick crashes: failures=%d first=%s second=%s", st.failures, first, second)
+	}
+	if time.Until(st.nextTry) < first {
+		t.Fatal("next attempt not delayed")
+	}
+}
+
+func TestNodeAssignedAlwaysOnStreamIsNotRelayedLocally(t *testing.T) {
+	h, db := newTestHandler(t)
+	apID := seedStream(t, db, "http://127.0.0.1:9/live.m3u8", "live/onnode", "public")
+	var streamID int64
+	db.QueryRow(`SELECT stream_id FROM access_points WHERE id = ?`, apID).Scan(&streamID)
+	res, _ := db.Exec(`INSERT INTO nodes (name, public_url, token_hash, secret_enc) VALUES ('n', 'http://127.0.0.1:1', 'x', 'y')`)
+	nodeID, _ := res.LastInsertId()
+	db.Exec(`UPDATE streams SET always_on = 1, node_id = ? WHERE id = ?`, nodeID, streamID)
+	streams, err := h.Store.AlwaysOnStreams()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(streams) != 0 {
+		t.Fatalf("node-assigned stream must be relayed by the node only, got %d local relays", len(streams))
+	}
+}

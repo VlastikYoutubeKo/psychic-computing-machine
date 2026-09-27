@@ -93,6 +93,9 @@ type StreamConfig struct {
 	SourceURL         string `json:"source_url"`
 	SourceUsername    string `json:"source_username,omitempty"`
 	SourcePasswordEnc string `json:"source_password_enc,omitempty"`
+	// TrustPrivateSource: the source may be on a private network (admin-owned
+	// streams); otherwise the node dials it public-only, like the control.
+	TrustPrivateSource bool `json:"trust_private_source"`
 }
 
 // Config is GET /_sv/node/config. Revocations cover access points and

@@ -45,9 +45,26 @@ func (h *Handler) relayStore() RelayStore {
 	return h.Store
 }
 
+// A relay must stay up this long before its failure count resets; a source
+// that only survives long enough to produce a first playlist would otherwise
+// be restarted every reconcile interval, bypassing the backoff.
+var alwaysOnMinHealthy = 2 * time.Minute
+
 type alwaysOnState struct {
-	failures int
-	nextTry  time.Time
+	failures     int
+	nextTry      time.Time
+	runningSince time.Time
+}
+
+func (st *alwaysOnState) fail() time.Duration {
+	st.failures++
+	backoff := alwaysOnMinBackoff << (st.failures - 1)
+	if backoff > alwaysOnMaxBackoff || backoff <= 0 {
+		backoff = alwaysOnMaxBackoff
+	}
+	st.nextTry = time.Now().Add(backoff)
+	st.runningSince = time.Time{}
+	return backoff
 }
 
 // RunAlwaysOn reconciles relays every interval until ctx ends.
@@ -99,18 +116,28 @@ func (h *Handler) reconcileAlwaysOn(ctx context.Context, states map[int64]*alway
 		if ctx.Err() != nil {
 			return
 		}
-		if alive, ok := pinned[id]; ok && !alive {
-			h.Remux.Stop(id) // relay process ended (source dropped): restart below
-		}
 		stt := states[id]
 		if stt == nil {
 			stt = &alwaysOnState{}
 			states[id] = stt
 		}
+		if alive, ok := pinned[id]; ok && !alive {
+			h.Remux.Stop(id) // relay process ended (source dropped)
+			if !stt.runningSince.IsZero() && time.Since(stt.runningSince) < alwaysOnMinHealthy {
+				ran := time.Since(stt.runningSince).Round(time.Second)
+				backoff := stt.fail()
+				log.Printf("always-on: stream %d relay exited after %s; retry in %s", id, ran, backoff)
+				h.setRuntime(id, "backoff", fmt.Sprintf("relay exited after %s; retrying in %s", ran, backoff.Round(time.Second)))
+				continue
+			}
+			stt.runningSince = time.Time{}
+		}
 		sig := sourceSignature(st)
 		if h.Remux.Existing(id, sig) != nil {
 			h.Remux.SetPinned(id, true)
-			stt.failures, stt.nextTry = 0, time.Time{}
+			if !stt.runningSince.IsZero() && time.Since(stt.runningSince) >= alwaysOnMinHealthy {
+				stt.failures, stt.nextTry = 0, time.Time{} // proven healthy
+			}
 			h.setRuntime(id, "running", "")
 			continue
 		}
@@ -120,18 +147,14 @@ func (h *Handler) reconcileAlwaysOn(ctx context.Context, states map[int64]*alway
 		h.setRuntime(id, "starting", "")
 		err := h.startRelay(st, sig)
 		if err != nil {
-			stt.failures++
-			backoff := alwaysOnMinBackoff << (stt.failures - 1)
-			if backoff > alwaysOnMaxBackoff || backoff <= 0 {
-				backoff = alwaysOnMaxBackoff
-			}
-			stt.nextTry = time.Now().Add(backoff)
+			backoff := stt.fail()
 			reason := relayFailureReason(err)
 			log.Printf("always-on: stream %d relay failed (%s); retry in %s", id, reason, backoff)
 			h.setRuntime(id, "backoff", fmt.Sprintf("%s; retrying in %s", reason, backoff.Round(time.Second)))
 			continue
 		}
-		stt.failures, stt.nextTry = 0, time.Time{}
+		// Failure count is kept until the relay has run alwaysOnMinHealthy.
+		stt.nextTry, stt.runningSince = time.Time{}, time.Now()
 		log.Printf("always-on: stream %d relay running", id)
 		h.setRuntime(id, "running", "")
 	}
