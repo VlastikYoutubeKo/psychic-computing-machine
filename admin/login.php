@@ -19,16 +19,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     sv_csrf_check();
     $username = trim((string) ($_POST['username'] ?? ''));
     $password = (string) ($_POST['password'] ?? '');
-    $ok = sv_login($username, $password);
+    $retry = sv_login_retry_after($username);
+    $ok = $retry === 0 && sv_login($username, $password);
+    $message = $retry > 0
+        ? 'Too many failed attempts. Try again in ' . max(1, (int) ceil($retry / 60)) . ' min.'
+        : 'Invalid username or password.';
     if ($wantsJson) {
+        if (!$ok && $retry > 0) {
+            http_response_code(429);
+            header('Retry-After: ' . $retry);
+        }
         header('Content-Type: application/json');
-        echo json_encode($ok ? ['ok' => true] : ['ok' => false, 'error' => 'Invalid username or password.']);
+        echo json_encode($ok ? ['ok' => true] : ['ok' => false, 'error' => $message]);
         exit;
     }
     if ($ok) {
         sv_redirect('index.php');
     }
-    $error = 'Invalid username or password.';
+    if ($retry > 0) {
+        http_response_code(429);
+        header('Retry-After: ' . $retry);
+    }
+    $error = $message;
 }
 ?>
 <!doctype html>

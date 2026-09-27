@@ -19,7 +19,19 @@ define('SV_RESERVED_SEGMENT', 'r');
 // the first segment; nested "_sv" in a public path has no route conflict.
 define('SV_RESERVED_ROOT_SEGMENT', '_sv');
 
+// Every admin page includes this file: send baseline security headers here.
+// Clickjacking: the admin has one-click destructive forms (revoke, reply on
+// GitHub), so it must never render inside a frame.
+if (PHP_SAPI !== 'cli' && !headers_sent()) {
+    header('X-Frame-Options: DENY');
+    header("Content-Security-Policy: frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
+    header('X-Content-Type-Options: nosniff');
+    header('Referrer-Policy: same-origin');
+    header_remove('X-Powered-By');
+}
+
 session_name('streamvault_admin');
+ini_set('session.use_strict_mode', '1');
 if (session_status() === PHP_SESSION_NONE) {
     // Behind Caddy, TLS is terminated before php-fpm ever sees the request,
     // so $_SERVER['HTTPS'] alone won't reflect it -- trust the standard

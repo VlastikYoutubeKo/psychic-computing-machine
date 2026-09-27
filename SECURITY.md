@@ -159,3 +159,38 @@ above have since shipped -- update this file the moment they do.
   link was revoked -- and embeds an image from the stream domain.
 - GitHub API errors are reported by status code only; response bodies are
   never logged or shown.
+
+## Security review 2026-09-27 (vibe-security checklist)
+
+No critical findings. Secrets were never committed (data/ ignored, keys
+encrypted at rest); CSRF on every POST; every page requires login; SQL is
+parameterized; output is escaped; uploads are content-checked and stored
+outside the web root; AI quota and output validation are server-side.
+
+Fixed:
+- **High -- login brute force.** Only a 300 ms delay protected the public
+  admin. Now at most 5 failures per client IP and 30 per username per 15
+  minutes (`login_attempts`, HTTP 429 + Retry-After). The client IP is taken
+  from CF-Connecting-IP only when the TCP peer is inside Cloudflare's
+  published ranges: the origin is reachable directly, where the header is
+  attacker-controlled. Update `SV_CLOUDFLARE_RANGES` if Cloudflare changes
+  them (https://www.cloudflare.com/ips/).
+- **Medium -- error disclosure.** php-fpm has display_errors on (shared pool);
+  opening admin/includes/*.php directly printed stack traces with paths.
+  admin/.user.ini now turns display_errors off (logs instead) for every
+  script under admin/.
+- **Medium -- clickjacking.** Admin pages send X-Frame-Options: DENY and
+  CSP frame-ancestors 'none' (+ base-uri/form-action 'self', nosniff,
+  Referrer-Policy) and drop X-Powered-By.
+- **Low -- session fixation hardening:** session.use_strict_mode=1.
+- **Low -- logout CSRF:** logout is POST + CSRF only.
+
+Accepted / open:
+- Anonymous requests to /_sv/slate/<variant>/<reason>/index.m3u8 can start
+  generic slate processes. Bounded by the 4-process cap (~36% of a core,
+  ~530 MiB); beyond it requests share a running slate.
+- Caddy still serves admin/includes/, admin/cli/ (403 only for cli) and
+  dotfiles such as admin/.user.ini (harmless content). Recommended Caddy
+  hardening for help.iptvlookup.com: respond 404 for /includes/*, /cli/* and
+  /.* -- pending owner approval (shared production Caddy).
+- Radio URL DNS rebinding (admin-entered only; documented above).

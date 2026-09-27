@@ -69,7 +69,8 @@ token="$(csrf "$base/settings.php")"
 curl -s -c "$COOKIES" -b "$COOKIES" -o /dev/null -d "csrf=$token" -d 'action=change_password' -d 'current_password=supersecretpassword123' -d 'new_password=changedpassword123' -d 'new_password_confirm=changedpassword123' "$base/settings.php"
 new_hash="$(sqlite3 "$STREAMVAULT_DB" "SELECT password_hash FROM operators WHERE username='admin'")"
 [ "$old_hash" != "$new_hash" ] || { echo 'FAIL: own-password change'; exit 1; }
-curl -s -c "$COOKIES" -b "$COOKIES" -o /dev/null "$base/logout.php"
+# Logout is POST + CSRF only (a GET would be a no-op).
+curl -s -c "$COOKIES" -b "$COOKIES" -o /dev/null --data-urlencode "csrf=$(csrf "$base/index.php")" "$base/logout.php"
 token="$(csrf "$base/login.php")"
 code="$(curl -s -c "$COOKIES" -b "$COOKIES" -o /dev/null -w '%{http_code}' -d "csrf=$token" -d 'username=admin' -d 'password=changedpassword123' "$base/login.php")"
 [ "$code" = 302 ] || { echo 'FAIL: login after own-password change'; exit 1; }

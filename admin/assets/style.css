@@ -580,3 +580,8 @@ code,.mono {
 .sv-preview-grid figure{margin:0}.sv-preview-grid img{display:block;width:100%;aspect-ratio:16/9;object-fit:cover;border:1px solid var(--border,#263550);border-radius:12px}.sv-preview-grid figcaption{color:var(--muted,#a8b7d0);font-size:.85rem;margin-top:.45rem}
 .sv-ai-form{border-top:1px solid #263550;margin-top:1.5rem;padding-top:1rem}
 .sv-section-nav{display:flex;gap:.6rem;flex-wrap:wrap;margin:1rem 0}.sv-section-nav a{display:inline-flex;padding:.55rem .85rem;border:1px solid #263550;border-radius:9px;text-decoration:none}
+
+/* Logout is a POST form (CSRF-protected) styled like the old link. */
+.sv-logout{display:inline;margin:0}
+.btn-link{background:none;border:0;padding:0;margin:0;color:var(--accent);font:inherit;cursor:pointer;box-shadow:none}
+.btn-link:hover{text-decoration:underline;background:none}

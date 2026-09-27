@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-09-27 -- Security review fixes
+
+Login throttling (5/IP, 30/username per 15 min, Cloudflare-aware client IP),
+display_errors off for the admin, anti-clickjacking and baseline security
+headers, strict session mode, POST+CSRF logout. See SECURITY.md "Security
+review 2026-09-27". New e2e: tests/e2e_login_security.sh.
+
 ## 2026-09-27 -- Admin v3 and editable slate text
 
 - Reorganized the admin around Dashboard, Streams, Leaks, Error screen and

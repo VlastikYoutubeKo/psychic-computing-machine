@@ -1,5 +1,6 @@
 <?php
 declare(strict_types=1);
+require_once __DIR__ . '/csrf.php';
 /** @var string $pageTitle */
 /** @var array|null $operator */
 $pageTitle ??= 'StreamVault';
@@ -29,7 +30,7 @@ $activeNav ??= '';
     <div class="sv-topbar">
       <div class="sv-location">Workspace / <?= h($pageTitle) ?></div>
       <?php if (!empty($operator)): ?>
-        <div class="user"><strong><?= h($operator['username']) ?></strong><a href="logout.php">Log out</a></div>
+        <div class="user"><strong><?= h($operator['username']) ?></strong><form method="post" action="logout.php" class="sv-logout"><?= sv_csrf_field() ?><button type="submit" class="btn-link">Log out</button></form></div>
       <?php endif; ?>
     </div>
     <?php if (!empty($_SESSION['flash'])): $f = $_SESSION['flash']; unset($_SESSION['flash']); ?>
