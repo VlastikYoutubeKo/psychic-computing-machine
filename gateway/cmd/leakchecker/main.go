@@ -23,11 +23,21 @@ import (
 )
 
 // How often a full scan runs absent a manual request. GitHub's search API
-// allows roughly 30 requests/minute authenticated; two queries per access
-// point per run means this interval should scale with how many streams
-// exist, but 20 minutes is a reasonable default for the handful of streams
-// this project is sized for -- revisit if that changes.
-const minScanInterval = 20 * time.Minute
+// allows roughly 30 requests/minute authenticated; with a handful of access
+// points a run makes ~12 queries, so every 5 minutes is well inside that.
+// STREAMVAULT_LEAK_SCAN_INTERVAL (a Go duration, e.g. "10m") overrides it --
+// raise it if the stream count grows enough to approach the search limit.
+const defaultScanInterval = 5 * time.Minute
+
+func scanInterval() time.Duration {
+	if v := os.Getenv("STREAMVAULT_LEAK_SCAN_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d >= time.Minute {
+			return d
+		}
+		log.Printf("leakchecker: ignoring invalid STREAMVAULT_LEAK_SCAN_INTERVAL=%q", v)
+	}
+	return defaultScanInterval
+}
 
 func getenv(key, def string) string {
 	if v := os.Getenv(key); v != "" {
@@ -46,6 +56,7 @@ func main() {
 	}
 	defer store.Close()
 
+	minScanInterval := scanInterval()
 	shouldRun, requestedValue, err := store.ShouldRun(minScanInterval)
 	if err != nil {
 		log.Fatalf("checking whether a scan is due: %v", err)
