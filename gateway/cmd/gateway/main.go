@@ -60,6 +60,8 @@ func main() {
 	log.Printf("streamvault-gateway listening on %s (db=%s)", listen, dbPath)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	// Always-on relays (streams flagged always_on in the admin).
+	go h.RunAlwaysOn(ctx, 15*time.Second)
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

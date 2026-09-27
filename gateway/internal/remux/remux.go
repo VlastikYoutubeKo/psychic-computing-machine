@@ -14,14 +14,24 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"sync"
 	"time"
 )
 
 const (
-	maxSessions = 2
-	idleTime    = 90 * time.Second
+	defaultSlots = 2
+	idleTime     = 90 * time.Second
 )
+
+// slotsFromEnv: STREAMVAULT_REMUX_SLOTS (1..16), default 2. Always-on relays
+// hold slots permanently, so a host that runs them may want more.
+func slotsFromEnv() int {
+	if n, err := strconv.Atoi(os.Getenv("STREAMVAULT_REMUX_SLOTS")); err == nil && n >= 1 && n <= 16 {
+		return n
+	}
+	return defaultSlots
+}
 
 var segmentName = regexp.MustCompile(`^seg[0-9]{6}\.ts$`)
 
@@ -34,6 +44,7 @@ type Session struct {
 	cancel    context.CancelFunc
 	lastUsed  time.Time
 	done      chan struct{}
+	pinned    bool // always-on relay: never idle-reaped
 }
 
 type Manager struct {
@@ -44,8 +55,54 @@ type Manager struct {
 	slots    chan struct{}
 }
 
+// Slots is the total number of concurrent remux/relay sessions.
+func (m *Manager) Slots() int { return cap(m.slots) }
+
+// SetPinned marks the stream's current session as an always-on relay (never
+// idle-reaped) or returns it to normal idle handling. False if none runs.
+func (m *Manager) SetPinned(streamID int64, pinned bool) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s := m.sessions[streamID]
+	if s == nil {
+		return false
+	}
+	s.pinned = pinned
+	s.lastUsed = time.Now()
+	return true
+}
+
+// Pinned lists stream IDs with a pinned session and whether it is alive.
+func (m *Manager) Pinned() map[int64]bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := map[int64]bool{}
+	for id, s := range m.sessions {
+		if !s.pinned {
+			continue
+		}
+		alive := true
+		select {
+		case <-s.done:
+			alive = false
+		default:
+		}
+		out[id] = alive
+	}
+	return out
+}
+
+// Stop ends a stream's session (used when an always-on relay must restart).
+func (m *Manager) Stop(streamID int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if s := m.sessions[streamID]; s != nil {
+		m.stopLocked(s)
+	}
+}
+
 func NewManager() *Manager {
-	m := &Manager{sessions: make(map[int64]*Session), byID: make(map[string]*Session), closed: make(chan struct{}), slots: make(chan struct{}, maxSessions)}
+	m := &Manager{sessions: make(map[int64]*Session), byID: make(map[string]*Session), closed: make(chan struct{}), slots: make(chan struct{}, slotsFromEnv())}
 	go func() {
 		tick := time.NewTicker(30 * time.Second)
 		defer tick.Stop()
@@ -235,7 +292,7 @@ func (m *Manager) ReapIdle() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, s := range m.sessions {
-		if time.Since(s.lastUsed) > idleTime {
+		if !s.pinned && time.Since(s.lastUsed) > idleTime {
 			m.stopLocked(s)
 		}
 	}

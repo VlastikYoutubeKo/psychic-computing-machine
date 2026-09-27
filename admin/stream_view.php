@@ -148,6 +148,16 @@ require __DIR__ . '/includes/layout_top.php';
     <tr><th>Source URL</th><td class="mono"><?= h($stream['source_url']) ?></td></tr>
     <tr><th>Source credentials</th><td><?= $stream['source_username'] ? 'Set (' . h($stream['source_username']) . ' / ••••••••)' : 'None' ?></td></tr>
     <tr><th>Rotation mode</th><td class="mono"><?= h($stream['rotation_mode']) ?></td></tr>
+    <tr><th>Always on (24/7)</th><td><?php if (!(int) ($stream['always_on'] ?? 0)): ?>Off (starts when the first viewer arrives)<?php else:
+        $rt = $db->prepare('SELECT state, detail, updated_at FROM stream_runtime WHERE stream_id = ?');
+        $rt->execute([$id]);
+        $runtime = $rt->fetch();
+        $state = $runtime['state'] ?? 'pending';
+        $badge = $state === 'running' ? 'active' : ($state === 'starting' || $state === 'pending' ? 'private' : 'revoked'); ?>
+        <span class="badge <?= h($badge) ?>"><?= h($state) ?></span>
+        <?php if (!empty($runtime['detail'])): ?> <span class="sv-help"><?= h($runtime['detail']) ?></span><?php endif; ?>
+        <?php if ($runtime): ?> <span class="sv-help">(updated <?= h($runtime['updated_at']) ?>)</span><?php else: ?> <span class="sv-help">the gateway picks it up within ~15 s</span><?php endif; ?>
+      <?php endif; ?></td></tr>
   </table>
   <form method="post" style="margin-top:1rem;display:inline;">
     <?= sv_csrf_field() ?>

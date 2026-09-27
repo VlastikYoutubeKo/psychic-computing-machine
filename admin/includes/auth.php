@@ -9,7 +9,7 @@ function sv_current_operator(): ?array
     if (empty($_SESSION['operator_id'])) {
         return null;
     }
-    $stmt = sv_db()->prepare("SELECT id, username, role, status, max_streams, max_access_points, allow_remux FROM operators WHERE id = ? AND status = 'active'");
+    $stmt = sv_db()->prepare("SELECT id, username, role, status, max_streams, max_access_points, allow_remux, allow_always_on FROM operators WHERE id = ? AND status = 'active'");
     $stmt->execute([$_SESSION['operator_id']]);
     $row = $stmt->fetch();
     if (!$row) {
@@ -29,6 +29,12 @@ function sv_require_login(): array
 }
 
 function sv_is_admin(array $op): bool { return $op['role'] === 'admin'; }
+
+/** A 24/7 relay pins a remux slot, so users need both permissions. */
+function sv_can_always_on(array $op): bool
+{
+    return sv_is_admin($op) || (!empty($op['allow_always_on']) && !empty($op['allow_remux']));
+}
 
 function sv_require_admin(): array
 {

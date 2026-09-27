@@ -507,3 +507,17 @@ See ROADMAP.md for the full phase list. Notably: no Caddy config has been
 touched (production `restream.mxnticek.eu`/`tvh.cyn.cz` cutover requires
 explicit approval per the project's own autonomy rules -- see
 DEPLOYMENT.md), and nothing here talks to GitHub/GitLab/Discord yet.
+
+## Always-on relays
+
+`gatewayhttp/alwayson.go` reconciles every 15 s: for each active stream with
+`always_on = 1` whose owner may run relays (admin/ownerless, or a user with
+`allow_always_on` and `allow_remux`), it ensures a pinned `remux.Session`
+exists. The source is opened through the normal fetch path; MPEG-TS bodies
+are piped to ffmpeg directly, HLS sources go through `hlspull`, which
+re-fetches the media playlist every target-duration/2 and streams new TS
+segments in order. Pinned sessions are skipped by idle reaping; a dead relay
+is stopped and restarted with exponential backoff. `serveEntry` already
+checks `Remux.Existing` first, so viewers of an always-on stream are served
+from the relay without touching the source. At most `slots - 1` relays run,
+so on-demand remux always has a slot.

@@ -124,6 +124,19 @@ check "stream limit (2) enforced" 2 "$(q "SELECT COUNT(*) FROM streams WHERE own
 for p in a2 a3 a4; do post alice "stream_view.php?id=$A_S" action=add_access_point "public_path=alice-$p" visibility=public >/dev/null; done
 check "access point limit (3) enforced" 3 "$(q "SELECT COUNT(*) FROM access_points ap JOIN streams s ON s.id=ap.stream_id WHERE s.owner_id=(SELECT id FROM operators WHERE username='alice')")"
 
+# --- always-on permission ----------------------------------------------------
+post alice "stream_form.php?id=$A_S" name=alice-stream source_type=hls "source_url=https://src.example/alice-stream.m3u8" replacement_reason=unauthorized_redistribution always_on=1 >/dev/null
+check "user without permission cannot enable always-on (forged POST ignored)" 0 "$(q "SELECT always_on FROM streams WHERE id=$A_S")"
+ALICE_ID=$(q "SELECT id FROM operators WHERE username='alice'")
+post admin accounts.php action=limits "account_id=$ALICE_ID" max_streams=2 max_access_points=3 allow_remux=1 allow_always_on=1 >/dev/null
+check "admin grants always-on" 1 "$(q "SELECT allow_always_on FROM operators WHERE id=$ALICE_ID")"
+post alice "stream_form.php?id=$A_S" name=alice-stream source_type=hls "source_url=https://src.example/alice-stream.m3u8" replacement_reason=unauthorized_redistribution always_on=1 >/dev/null
+check "permitted user can enable always-on" 1 "$(q "SELECT always_on FROM streams WHERE id=$A_S")"
+get alice "stream_view.php?id=$A_S" >/dev/null; grep -q "Always on (24/7)" "$WORK/last.html" && ok "stream page shows always-on state" || bad "always-on state missing on stream page"
+post admin accounts.php action=limits "account_id=$ALICE_ID" max_streams=2 max_access_points=3 allow_remux=1 >/dev/null
+post alice "stream_form.php?id=$A_S" name=alice-stream source_type=hls "source_url=https://src.example/alice-stream.m3u8" replacement_reason=unauthorized_redistribution always_on=1 >/dev/null
+check "withdrawn permission turns always-on off on next save" 0 "$(q "SELECT always_on FROM streams WHERE id=$A_S")"
+
 # --- own leak sources are private -------------------------------------------
 post bob my_account.php action=add_leak_source provider=github_repo identifier=bob/repo >/dev/null
 BOB_SRC=$(q "SELECT id FROM leak_sources WHERE identifier='bob/repo'")

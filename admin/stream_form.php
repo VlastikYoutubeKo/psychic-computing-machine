@@ -23,6 +23,7 @@ $form = [
     'source_url' => $stream['source_url'] ?? '',
     'source_username' => $stream['source_username'] ?? '',
     'rotation_mode' => 'auto',
+    'always_on' => (string) (int) ($stream['always_on'] ?? 0),
     'replacement_reason' => $stream['replacement_reason'] ?? 'unauthorized_redistribution',
 ];
 
@@ -32,6 +33,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $form[$key] = trim((string) ($_POST[$key] ?? ''));
     }
     $form['rotation_mode'] = 'auto'; // no longer a user choice, see the help text
+    // Only accounts allowed to pin a relay may switch always-on on; if the
+    // permission was withdrawn, saving turns it off.
+    $form['always_on'] = sv_can_always_on($operator) && isset($_POST['always_on']) ? '1' : '0';
     $sourcePassword = (string) ($_POST['source_password'] ?? '');
 
     if ($form['name'] === '') {
@@ -94,7 +98,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 WHERE id=?')
                 ->execute([$form['name'], $form['description'], $form['source_type'], $cleanUrl,
                     $finalUsername ?: null, $encryptedPassword, $form['rotation_mode'], $form['replacement_reason'], $id]);
-            sv_audit('stream_updated', "stream:$id");
+            $db->prepare('UPDATE streams SET always_on = ? WHERE id = ?')->execute([(int) $form['always_on'], $id]);
+            sv_audit('stream_updated', "stream:$id", ['always_on' => (int) $form['always_on']]);
             sv_flash('ok', 'Stream updated.');
             sv_redirect('stream_view.php?id=' . $id);
         } else {
@@ -103,7 +108,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ->execute([$form['name'], $form['description'], $form['source_type'], $cleanUrl,
                     $finalUsername ?: null, $encryptedPassword, $form['rotation_mode'], $form['replacement_reason'], $operator['id']]);
             $newId = (int) $db->lastInsertId();
-            sv_audit('stream_created', "stream:$newId");
+            $db->prepare('UPDATE streams SET always_on = ? WHERE id = ?')->execute([(int) $form['always_on'], $newId]);
+            sv_audit('stream_created', "stream:$newId", ['always_on' => (int) $form['always_on']]);
             sv_flash('ok', 'Stream created. Now add a public or private access point to it.');
             sv_redirect('stream_view.php?id=' . $newId);
         }
@@ -145,6 +151,11 @@ require __DIR__ . '/includes/layout_top.php';
     <input type="password" name="source_password" autocomplete="new-password">
 
     <div class="sv-help">Leak response is automatic: when the Leak Checker finds one of this stream's links posted publicly on GitHub, that link is revoked right away (players get the "Stream unavailable" screen) and the incident is logged.</div>
+
+    <?php if (sv_can_always_on($operator)): ?>
+      <label><input type="checkbox" name="always_on" value="1" <?= $form['always_on'] === '1' ? 'checked' : '' ?>> Always on (24/7 relay)</label>
+      <div class="sv-help">The gateway keeps this stream running permanently: the first viewer starts instantly and the source sees one connection instead of one per viewer. Uses one relay slot all the time.</div>
+    <?php endif; ?>
 
     <label>Replacement reason shown if revoked</label>
     <div class="sv-help">The administrator maintains the video and browser text for each reason.</div>

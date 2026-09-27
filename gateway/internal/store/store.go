@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -190,4 +191,58 @@ func (s *Store) ValidateToken(accessPointID int64, rawToken string) (TokenInfo, 
 // request being served -- this is bookkeeping, not an access decision.
 func (s *Store) TouchToken(tokenID int64) {
 	_, _ = s.db.Exec(`UPDATE access_tokens SET last_used_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?`, tokenID)
+}
+
+// AlwaysOnStreams returns active streams flagged always_on whose owner may
+// run a 24/7 relay (admins and ownerless streams always; users need both
+// allow_always_on and allow_remux, since a relay is a pinned remux session).
+func (s *Store) AlwaysOnStreams() ([]Stream, error) {
+	rows, err := s.db.Query(`
+		SELECT st.id, st.name, st.source_type, st.source_url, st.source_username,
+		       st.source_password_enc, st.status, st.disabled_at, st.replacement_reason, st.replacement_message
+		FROM streams st
+		LEFT JOIN operators owner ON owner.id = st.owner_id
+		WHERE st.always_on = 1 AND st.status = 'active'
+		  AND (owner.id IS NULL OR owner.role = 'admin'
+		       OR (owner.status = 'active' AND owner.allow_always_on = 1 AND owner.allow_remux = 1))
+		ORDER BY st.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Stream
+	for rows.Next() {
+		var st Stream
+		if err := rows.Scan(&st.ID, &st.Name, &st.SourceType, &st.SourceURL, &st.SourceUsername,
+			&st.SourcePasswordEnc, &st.Status, &st.DisabledAt, &st.ReplacementReason, &st.ReplacementMessage); err != nil {
+			return nil, err
+		}
+		st.AllowRemux = true
+		out = append(out, st)
+	}
+	return out, rows.Err()
+}
+
+// SetRuntime records the always-on relay state shown in the admin.
+func (s *Store) SetRuntime(streamID int64, state, detail string) error {
+	_, err := s.db.Exec(`INSERT INTO stream_runtime (stream_id, state, detail, updated_at)
+		VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+		ON CONFLICT(stream_id) DO UPDATE SET state = excluded.state, detail = excluded.detail, updated_at = excluded.updated_at`,
+		streamID, state, detail)
+	return err
+}
+
+// ClearRuntime removes relay state for streams that are no longer always-on.
+func (s *Store) ClearRuntime(keep []int64) error {
+	if len(keep) == 0 {
+		_, err := s.db.Exec(`DELETE FROM stream_runtime`)
+		return err
+	}
+	args := make([]any, len(keep))
+	ph := make([]string, len(keep))
+	for i, id := range keep {
+		args[i], ph[i] = id, "?"
+	}
+	_, err := s.db.Exec(`DELETE FROM stream_runtime WHERE stream_id NOT IN (`+strings.Join(ph, ",")+`)`, args...)
+	return err
 }

@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-09-27 -- Always-on (24/7) relays
+
+- Streams can be flagged "Always on". A supervisor in the gateway (every
+  15 s) keeps one pinned remux session per such stream: the first viewer
+  joins instantly and the source sees one connection instead of one per
+  viewer. Failed relays back off 30 s .. 10 min; state (running / backoff +
+  URL-free reason) is written to stream_runtime and shown on the stream page.
+- HLS sources are pulled by the new internal/hlspull package (best variant
+  of a master playlist, live-edge start, TS-only; encrypted and fMP4 sources
+  are reported, not relayed) and fed to the same ffmpeg -c copy pipeline as
+  MPEG-TS sources. Every playlist/segment fetch goes through the gateway's
+  SSRF policy and credential handling.
+- Remux slots are configurable (STREAMVAULT_REMUX_SLOTS, default 2); relays
+  never take the last slot, which stays free for on-demand viewers.
+- Per-account permission allow_always_on (users also need allow_remux);
+  withdrawing it stops the relay on the next reconcile. Migration 0009.
+
 ## 2026-09-27 -- Multi-user accounts
 
 - Roles (admin/user). Users see and manage only their own streams, access
