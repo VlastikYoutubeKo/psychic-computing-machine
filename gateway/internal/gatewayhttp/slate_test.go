@@ -182,7 +182,8 @@ func TestUpstreamFailureSelectsTemporarySlateForPlayersOnly(t *testing.T) {
 		t.Fatalf("player on upstream failure: %d %s", player.Code, player.Body.String())
 	}
 	browser := slateRequest(t, h, "GET", "/live/down.m3u8", "text/html")
-	if browser.Code != http.StatusBadGateway || !strings.Contains(browser.Body.String(), "Source cooling down") || !strings.Contains(browser.Body.String(), "Please retry soon.") {
+	// 503 (not 502) so Cloudflare passes our page through instead of its own.
+	if browser.Code != http.StatusServiceUnavailable || browser.Header().Get("Retry-After") == "" || !strings.Contains(browser.Body.String(), "Source cooling down") || !strings.Contains(browser.Body.String(), "Please retry soon.") {
 		t.Fatalf("browser on upstream failure: %d %s", browser.Code, browser.Body.String())
 	}
 	if f.calls != 0 {

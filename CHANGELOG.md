@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-09-27 -- Source failure diagnostics; 503 instead of 502
+
+A viewer opening a private link in Safari got Cloudflare's own "Bad gateway /
+Host Error" page: the 4fun source (Tvheadend behind this host's Caddy)
+failed intermittently, and the gateway logged only "fetching source failed".
+- Fetch failures now log a URL-free cause (timeout, connection refused/reset,
+  DNS, TLS, SSRF-blocked redirect) and upstream HTTP status codes.
+- Temporary failures return 503 + Retry-After instead of 502: Cloudflare
+  replaces an origin 502 with its own error page but passes a 503 body, so
+  browsers see our "temporarily unavailable" page. Players still get the
+  temporary slate.
+
 ## 2026-09-27 -- Security review fixes
 
 Login throttling (5/IP, 30/username per 15 min, Cloudflare-aware client IP),

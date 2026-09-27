@@ -312,7 +312,7 @@ func (h *Handler) serveEntry(w http.ResponseWriter, r *http.Request, ap *store.A
 	sourcePrivate := h.isSourcePrivate(r.Context(), ap.Stream, sourceEntry)
 	resp, err := h.fetch(context.Background(), sourceEntry, ap.Stream, sourcePrivate, 0)
 	if err != nil {
-		log.Printf("fetching source for stream %d failed", ap.Stream.ID)
+		log.Printf("fetching source for stream %d failed: %s", ap.Stream.ID, fetchFailureKind(err))
 		if wantsSlate(r) {
 			writeSlatePlaylist(w, r, slate.Temporary)
 			return
@@ -322,6 +322,7 @@ func (h *Handler) serveEntry(w http.ResponseWriter, r *http.Request, ap *store.A
 	}
 	if resp.StatusCode >= 400 {
 		resp.Body.Close()
+		log.Printf("source for stream %d returned HTTP %d", ap.Stream.ID, resp.StatusCode)
 		if wantsSlate(r) {
 			writeSlatePlaylist(w, r, slate.Temporary)
 			return
@@ -341,7 +342,7 @@ func (h *Handler) serveResource(w http.ResponseWriter, r *http.Request, ap *stor
 	sourcePrivate := h.isSourcePrivate(r.Context(), ap.Stream, sourceEntry)
 	resp, err := h.fetch(r.Context(), target, ap.Stream, sourcePrivate, 20*time.Second)
 	if err != nil {
-		log.Printf("fetching resource for stream %d failed", ap.Stream.ID)
+		log.Printf("fetching resource for stream %d failed: %s", ap.Stream.ID, fetchFailureKind(err))
 		h.writeTemporaryHTML(w, r)
 		return
 	}
@@ -369,10 +370,10 @@ func (h *Handler) fetch(ctx context.Context, target *url.URL, s store.Stream, so
 		Transport: h.Transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 5 {
-				return errors.New("stopped after 5 redirects")
+				return fmt.Errorf("%w: stopped after 5 redirects", errBlockedTarget)
 			}
 			if err := checkFetchTarget(req.Context(), h.Resolve, req.URL, sourcePrivate); err != nil {
-				return fmt.Errorf("refusing to follow redirect: %w", err)
+				return fmt.Errorf("%w: refusing to follow redirect: %v", errBlockedTarget, err)
 			}
 			return nil
 		},
@@ -502,7 +503,7 @@ func (h *Handler) serveRemuxEntry(w http.ResponseWriter, ap *store.AccessPoint, 
 	}
 	if err != nil {
 		log.Printf("starting TS remux for stream %d failed: %v", ap.Stream.ID, err)
-		http.Error(w, "remux unavailable", http.StatusBadGateway)
+		http.Error(w, "remux unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	h.writeRemuxPlaylist(w, ap, s, prefix)
@@ -512,18 +513,18 @@ func (h *Handler) writeRemuxPlaylist(w http.ResponseWriter, ap *store.AccessPoin
 	p, err := h.Remux.WaitPlaylist(s)
 	if err != nil {
 		log.Printf("remux playlist for stream %d: %v", ap.Stream.ID, err)
-		http.Error(w, "remux unavailable", http.StatusBadGateway)
+		http.Error(w, "remux unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	data, err := os.ReadFile(p)
 	if err != nil || len(data) > maxPlaylistSize {
-		http.Error(w, "remux playlist unavailable", http.StatusBadGateway)
+		http.Error(w, "remux playlist unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	base := &url.URL{Scheme: "sv-remux", Host: s.ID, Path: "/index.m3u8"}
 	rewritten, err := hls.RewritePlaylist(string(data), base, h.encodeRef(prefix, ap.ID))
 	if err != nil {
-		http.Error(w, "remux playlist invalid", http.StatusBadGateway)
+		http.Error(w, "remux playlist invalid", http.StatusServiceUnavailable)
 		return
 	}
 	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
@@ -633,7 +634,10 @@ func (h *Handler) writeTemporaryHTML(w http.ResponseWriter, r *http.Request) {
 			copy = clean
 		}
 	}
-	h.writeErrorHTML(w, r, copy, http.StatusBadGateway)
+	// 503, not 502: Cloudflare replaces an origin 502 with its own "Bad
+	// gateway" page but passes a 503 body through, so viewers see this one.
+	w.Header().Set("Retry-After", "30")
+	h.writeErrorHTML(w, r, copy, http.StatusServiceUnavailable)
 }
 func (h *Handler) writeErrorHTML(w http.ResponseWriter, r *http.Request, copy slate.Text, status int) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
