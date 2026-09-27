@@ -90,6 +90,16 @@ type Stream struct {
 	ReplacementReason  string
 	ReplacementMessage sql.NullString
 	AllowRemux         bool
+	Node               *NodeRef // non-nil when the stream is assigned to a relay node
+}
+
+// NodeRef is what the viewer path needs to redirect to a node.
+type NodeRef struct {
+	ID         int64
+	PublicURL  string
+	SecretEnc  string
+	Status     string
+	LastSeenAt sql.NullString
 }
 
 // AccessPoint is a resolved public_path -> stream mapping.
@@ -114,19 +124,24 @@ func (s *Store) ResolveAccessPoint(publicPath string) (*AccessPoint, error) {
 		SELECT ap.id, ap.stream_id, ap.public_path, ap.visibility, ap.output_format, ap.status, ap.revoked_at,
 		       st.id, st.name, st.source_type, st.source_url, st.source_username,
 		       st.source_password_enc, st.status, st.disabled_at, st.replacement_reason, st.replacement_message,
-		       CASE WHEN owner.role = 'user' THEN owner.allow_remux ELSE 1 END
+		       CASE WHEN owner.role = 'user' THEN owner.allow_remux ELSE 1 END,
+		       n.id, n.public_url, n.secret_enc, n.status, n.last_seen_at
 		FROM access_points ap
 		JOIN streams st ON st.id = ap.stream_id
 		LEFT JOIN operators owner ON owner.id = st.owner_id
+		LEFT JOIN nodes n ON n.id = st.node_id
 		WHERE ap.public_path = ?`, publicPath)
 
 	var ap AccessPoint
 	var allowRemux int
+	var nodeID sql.NullInt64
+	var nodeURL, nodeSecret, nodeStatus, nodeSeen sql.NullString
 	if err := row.Scan(
 		&ap.ID, &ap.StreamID, &ap.PublicPath, &ap.Visibility, &ap.OutputFormat, &ap.Status, &ap.RevokedAt,
 		&ap.Stream.ID, &ap.Stream.Name, &ap.Stream.SourceType, &ap.Stream.SourceURL,
 		&ap.Stream.SourceUsername, &ap.Stream.SourcePasswordEnc, &ap.Stream.Status, &ap.Stream.DisabledAt,
 		&ap.Stream.ReplacementReason, &ap.Stream.ReplacementMessage, &allowRemux,
+		&nodeID, &nodeURL, &nodeSecret, &nodeStatus, &nodeSeen,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
@@ -134,6 +149,9 @@ func (s *Store) ResolveAccessPoint(publicPath string) (*AccessPoint, error) {
 		return nil, err
 	}
 	ap.Stream.AllowRemux = allowRemux != 0
+	if nodeID.Valid {
+		ap.Stream.Node = &NodeRef{ID: nodeID.Int64, PublicURL: nodeURL.String, SecretEnc: nodeSecret.String, Status: nodeStatus.String, LastSeenAt: nodeSeen}
+	}
 	return &ap, nil
 }
 
@@ -244,5 +262,89 @@ func (s *Store) ClearRuntime(keep []int64) error {
 		args[i], ph[i] = id, "?"
 	}
 	_, err := s.db.Exec(`DELETE FROM stream_runtime WHERE stream_id NOT IN (`+strings.Join(ph, ",")+`)`, args...)
+	return err
+}
+
+// Node is a relay node row (control-plane view).
+type Node struct {
+	ID        int64
+	Name      string
+	PublicURL string
+	TokenHash string
+	SecretEnc string
+	Status    string
+}
+
+// NodeByID loads a node for authentication.
+func (s *Store) NodeByID(id int64) (*Node, error) {
+	var n Node
+	err := s.db.QueryRow(`SELECT id, name, public_url, token_hash, secret_enc, status FROM nodes WHERE id = ?`, id).
+		Scan(&n.ID, &n.Name, &n.PublicURL, &n.TokenHash, &n.SecretEnc, &n.Status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return &n, err
+}
+
+// NodeStreams are the active streams assigned to a node.
+func (s *Store) NodeStreams(nodeID int64) ([]Stream, error) {
+	rows, err := s.db.Query(`
+		SELECT id, name, source_type, source_url, source_username, source_password_enc,
+		       status, disabled_at, replacement_reason, replacement_message
+		FROM streams WHERE node_id = ? AND status = 'active' ORDER BY id`, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Stream
+	for rows.Next() {
+		var st Stream
+		if err := rows.Scan(&st.ID, &st.Name, &st.SourceType, &st.SourceURL, &st.SourceUsername,
+			&st.SourcePasswordEnc, &st.Status, &st.DisabledAt, &st.ReplacementReason, &st.ReplacementMessage); err != nil {
+			return nil, err
+		}
+		st.AllowRemux = true
+		out = append(out, st)
+	}
+	return out, rows.Err()
+}
+
+// NodeRevocations lists revoked access points and revoked/expired tokens
+// belonging to the node's streams.
+func (s *Store) NodeRevocations(nodeID int64) (aps, tokens []int64, err error) {
+	aps, err = s.ids(`SELECT ap.id FROM access_points ap JOIN streams st ON st.id = ap.stream_id
+		WHERE st.node_id = ? AND ap.status = 'revoked'`, nodeID)
+	if err != nil {
+		return nil, nil, err
+	}
+	tokens, err = s.ids(`SELECT t.id FROM access_tokens t JOIN access_points ap ON ap.id = t.access_point_id
+		JOIN streams st ON st.id = ap.stream_id
+		WHERE st.node_id = ? AND (t.revoked_at IS NOT NULL
+		   OR (t.expires_at IS NOT NULL AND t.expires_at < strftime('%Y-%m-%dT%H:%M:%fZ','now')))`, nodeID)
+	return aps, tokens, err
+}
+
+func (s *Store) ids(query string, args ...any) ([]int64, error) {
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []int64{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// RecordNodeStatus stores a node heartbeat; a pending node becomes active.
+func (s *Store) RecordNodeStatus(nodeID int64, statusJSON string) error {
+	_, err := s.db.Exec(`UPDATE nodes SET last_seen_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+		last_status_json = ?, status = CASE WHEN status = 'pending' THEN 'active' ELSE status END
+		WHERE id = ? AND status != 'disabled'`, statusJSON, nodeID)
 	return err
 }

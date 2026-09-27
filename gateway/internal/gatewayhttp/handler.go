@@ -42,6 +42,9 @@ type Handler struct {
 	Transport *http.Transport
 	Remux     *remux.Manager
 	Slate     slate.Provider
+	// Relays overrides where always-on relays come from (nil = Store); set
+	// by relay nodes, which have no database.
+	Relays RelayStore
 
 	// Resolve backs checkFetchTarget's private/public IP classification.
 	// Defaults to real DNS (hostResolvesToPrivate); tests override it,
@@ -67,21 +70,41 @@ type sourceTrustEntry struct {
 
 const sourceTrustCacheTTL = 5 * time.Minute
 
+// NewRelayOnly builds a handler for relay nodes: no database, no slates,
+// only the fetch path (SSRF policy, credentials), remux sessions and the
+// always-on supervisor fed by relays. key decrypts the source passwords in
+// the node config (nodeproto.ConfigKey).
+func NewRelayOnly(key []byte, relays RelayStore) *Handler {
+	return &Handler{
+		Key:              key,
+		Transport:        newSourceTransport(),
+		Remux:            remux.NewManager(),
+		Resolve:          hostResolvesToPrivate,
+		Relays:           relays,
+		lastTouch:        make(map[int64]time.Time),
+		sourceTrustCache: make(map[int64]sourceTrustEntry),
+	}
+}
+
+func newSourceTransport() *http.Transport {
+	return &http.Transport{
+		DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		TLSHandshakeTimeout:   5 * time.Second,
+		ResponseHeaderTimeout: 10 * time.Second,
+		IdleConnTimeout:       60 * time.Second,
+	}
+}
+
 func New(st *store.Store, key []byte) (*Handler, error) {
 	codec, err := blobcodec.New()
 	if err != nil {
 		return nil, fmt.Errorf("gatewayhttp: initializing blob codec: %w", err)
 	}
 	h := &Handler{
-		Store: st,
-		Key:   key,
-		Codec: codec,
-		Transport: &http.Transport{
-			DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
-			TLSHandshakeTimeout:   5 * time.Second,
-			ResponseHeaderTimeout: 10 * time.Second,
-			IdleConnTimeout:       60 * time.Second,
-		},
+		Store:            st,
+		Key:              key,
+		Codec:            codec,
+		Transport:        newSourceTransport(),
 		Remux:            remux.NewManager(),
 		Slate:            slate.NewManager(),
 		Resolve:          hostResolvesToPrivate,
@@ -123,6 +146,11 @@ func (h *Handler) isSourcePrivate(ctx context.Context, s store.Stream, sourceEnt
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Node API first: it has its own auth and accepts POST (status).
+	if strings.HasPrefix(r.URL.Path, "/_sv/node/") {
+		h.serveNodeAPI(w, r)
+		return
+	}
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -190,6 +218,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if remainder == "" {
+		if h.redirectToNode(w, r, ap, tokenInfo) {
+			return
+		}
 		h.serveEntry(w, r, ap, sourceEntry, prefix)
 		return
 	}

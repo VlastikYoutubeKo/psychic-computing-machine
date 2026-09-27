@@ -211,3 +211,28 @@ Accepted / open:
   to scan that user's access points; they never post public replies.
 - Admin-only: accounts, error screen (texts/AI/audio -- the OpenRouter key
   is money-limited), global settings, GitHub replies.
+
+## Relay nodes (2026-09-27)
+
+- A node token (svn_<id>_<256-bit secret>) is shown once. The control plane
+  stores SHA-256(secret) for authentication (constant-time compare; one
+  generic 401 for every failure) and the secret encrypted with the main key,
+  which it needs to sign viewer URLs and to encrypt credentials for that node.
+- A node receives source credentials ONLY for streams assigned to it,
+  encrypted under a key derived from its own secret. A compromised node leaks
+  those credentials: assign carefully, and use "New token" / Disable / Delete
+  to cut it off (the old token stops working immediately).
+- Viewer URLs to nodes are HMAC-SHA256 over stream, access point, token and
+  expiry (12 h). Revocation does not wait for expiry: the node refuses any
+  access point or token on the revocation list it pulls every ~10 s, and a
+  disabled or stale node gets no new viewers.
+- The node serves only its own relay files (strict segment names); it is not
+  a proxy. /healthz is the only unauthenticated path.
+- The node binary download requires the node token; install.sh is public and
+  contains no secrets.
+- Known limits: leaked *node* URLs are not found by the Leak Checker (it
+  searches rest.iptvlookup.com anchors), but they carry the access point and
+  token ids, so revoking those still stops them. Node traffic is plain HTTP
+  unless you put HTTPS in front of it (then use that as the public URL).
+  Pre-existing: source Basic-auth credentials are sent with every segment
+  fetch, including to other hosts a source redirects/points to.

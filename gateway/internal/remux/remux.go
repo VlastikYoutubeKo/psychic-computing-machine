@@ -92,6 +92,14 @@ func (m *Manager) Pinned() map[int64]bool {
 	return out
 }
 
+// Current returns the stream's session regardless of signature (nil if none).
+// Relay nodes use it to serve their pinned relays.
+func (m *Manager) Current(streamID int64) *Session {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.sessions[streamID]
+}
+
 // Stop ends a stream's session (used when an always-on relay must restart).
 func (m *Manager) Stop(streamID int64) {
 	m.mu.Lock()

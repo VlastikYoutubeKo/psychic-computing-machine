@@ -24,6 +24,7 @@ $activeNav ??= '';
     <a href="incidents.php" class="<?= $activeNav === 'incidents' ? 'active' : '' ?>" <?= $activeNav === 'incidents' ? 'aria-current="page"' : '' ?>><span class="sv-nav-icon" aria-hidden="true">◇</span>Leaks</a>
     <?php if (sv_is_admin($operator)): ?>
     <a href="accounts.php" class="<?= $activeNav === 'accounts' ? 'active' : '' ?>" <?= $activeNav === 'accounts' ? 'aria-current="page"' : '' ?>><span class="sv-nav-icon" aria-hidden="true">◎</span>Accounts</a>
+    <a href="nodes.php" class="<?= $activeNav === 'nodes' ? 'active' : '' ?>" <?= $activeNav === 'nodes' ? 'aria-current="page"' : '' ?>><span class="sv-nav-icon" aria-hidden="true">⬡</span>Nodes</a>
     <a href="error_screen.php" class="<?= $activeNav === 'error_screen' ? 'active' : '' ?>" <?= $activeNav === 'error_screen' ? 'aria-current="page"' : '' ?>><span class="sv-nav-icon" aria-hidden="true">▣</span>Error screen</a>
     <a href="settings.php" class="<?= $activeNav === 'settings' ? 'active' : '' ?>" <?= $activeNav === 'settings' ? 'aria-current="page"' : '' ?>><span class="sv-nav-icon" aria-hidden="true">⚙</span>Settings</a>
     <?php endif; ?>

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"streamvault/gateway/internal/gatewayhttp"
+	"streamvault/gateway/internal/node"
 	"streamvault/gateway/internal/secretbox"
 	"streamvault/gateway/internal/store"
 )
@@ -28,7 +29,14 @@ func getenv(key, def string) string {
 	return def
 }
 
+// version is reported by nodes in their heartbeat.
+const version = "2026.09.27"
+
 func main() {
+	if os.Getenv("STREAMVAULT_MODE") == "node" {
+		runNode()
+		return
+	}
 	dbPath := getenv("STREAMVAULT_DB", "../data/streamvault.sqlite")
 	keyPath := getenv("STREAMVAULT_KEY_FILE", "../data/secret.key")
 	listen := getenv("STREAMVAULT_LISTEN", "127.0.0.1:8090")
@@ -70,5 +78,24 @@ func main() {
 	}()
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Printf("gateway server error: %v", err)
+	}
+}
+
+// runNode starts relay-node mode (see internal/node): no database, config
+// and revocations come from the control plane.
+func runNode() {
+	n, err := node.New(node.Config{
+		ControlURL: os.Getenv("STREAMVAULT_CONTROL_URL"),
+		Token:      os.Getenv("STREAMVAULT_NODE_TOKEN"),
+		Listen:     getenv("STREAMVAULT_LISTEN", "0.0.0.0:8090"),
+		Version:    version,
+	})
+	if err != nil {
+		log.Fatalf("node: %v", err)
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	if err := n.Run(ctx); err != nil {
+		log.Fatalf("node: %v", err)
 	}
 }

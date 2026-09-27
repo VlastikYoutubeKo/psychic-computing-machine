@@ -1,5 +1,33 @@
 # Changelog
 
+## 2026-09-27 -- Relay nodes
+
+- The same gateway binary runs as a relay node with STREAMVAULT_MODE=node.
+  Nodes pull their assignment from the control plane (GET /_sv/node/config
+  every 10 s), keep a 24/7 relay per assigned stream (same supervisor as
+  always-on), serve viewers under /n/<stream>/…, and heartbeat metrics
+  (POST /_sv/node/status every 15 s: load, CPUs, RAM, network, per-stream
+  state and viewers).
+- Viewers keep using rest.iptvlookup.com links: after the token check the
+  control gateway 302-redirects to the node with an HMAC-signed URL (12 h);
+  if the node is offline (no heartbeat for 45 s), disabled or misconfigured,
+  the control gateway serves the stream itself.
+- Revocation reaches nodes with the config poll (revoked access points and
+  revoked/expired tokens of the node's streams), so a revoked link stops on
+  the node within ~10 s even though its signed URL has not expired.
+- Admin: Nodes page (create -> one-time install one-liner, status, disable,
+  new token, delete, edit public URL) and a "Relay node" selector on the
+  stream form (admin only). Install: curl <control>/_sv/node/install.sh |
+  sudo STREAMVAULT_NODE_TOKEN=svn_… sh (installs ffmpeg, downloads the
+  binary from the control plane with the token, systemd service).
+- Tokens svn_<id>_<secret>: SHA-256(secret) for auth, secret encrypted with
+  the main key for signing; source credentials are sent to a node encrypted
+  under a key derived from its secret. Migration 0010.
+- Tests: nodeproto unit tests, control API tests, a Go end-to-end test
+  (control + running node + live HLS source + real ffmpeg, incl. revocation
+  reaching the node), and tests/e2e_nodes.sh (26 checks across the PHP
+  admin, the control gateway and the downloaded binary in node mode).
+
 ## 2026-09-27 -- Always-on (24/7) relays
 
 - Streams can be flagged "Always on". A supervisor in the gateway (every

@@ -24,6 +24,7 @@ $form = [
     'source_username' => $stream['source_username'] ?? '',
     'rotation_mode' => 'auto',
     'always_on' => (string) (int) ($stream['always_on'] ?? 0),
+    'node_id' => (string) (int) ($stream['node_id'] ?? 0),
     'replacement_reason' => $stream['replacement_reason'] ?? 'unauthorized_redistribution',
 ];
 
@@ -36,6 +37,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // Only accounts allowed to pin a relay may switch always-on on; if the
     // permission was withdrawn, saving turns it off.
     $form['always_on'] = sv_can_always_on($operator) && isset($_POST['always_on']) ? '1' : '0';
+    // Node assignment is admin-only; others keep whatever the admin set.
+    if (sv_is_admin($operator)) {
+        $nid = (int) ($_POST['node_id'] ?? 0);
+        $exists = $db->prepare('SELECT 1 FROM nodes WHERE id = ?');
+        $exists->execute([$nid]);
+        $form['node_id'] = ($nid > 0 && $exists->fetchColumn()) ? (string) $nid : '0';
+    } else {
+        $form['node_id'] = (string) (int) ($stream['node_id'] ?? 0);
+    }
     $sourcePassword = (string) ($_POST['source_password'] ?? '');
 
     if ($form['name'] === '') {
@@ -98,7 +108,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 WHERE id=?')
                 ->execute([$form['name'], $form['description'], $form['source_type'], $cleanUrl,
                     $finalUsername ?: null, $encryptedPassword, $form['rotation_mode'], $form['replacement_reason'], $id]);
-            $db->prepare('UPDATE streams SET always_on = ? WHERE id = ?')->execute([(int) $form['always_on'], $id]);
+            $db->prepare('UPDATE streams SET always_on = ?, node_id = ? WHERE id = ?')->execute([(int) $form['always_on'], (int) $form['node_id'] ?: null, $id]);
             sv_audit('stream_updated', "stream:$id", ['always_on' => (int) $form['always_on']]);
             sv_flash('ok', 'Stream updated.');
             sv_redirect('stream_view.php?id=' . $id);
@@ -108,7 +118,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ->execute([$form['name'], $form['description'], $form['source_type'], $cleanUrl,
                     $finalUsername ?: null, $encryptedPassword, $form['rotation_mode'], $form['replacement_reason'], $operator['id']]);
             $newId = (int) $db->lastInsertId();
-            $db->prepare('UPDATE streams SET always_on = ? WHERE id = ?')->execute([(int) $form['always_on'], $newId]);
+            $db->prepare('UPDATE streams SET always_on = ?, node_id = ? WHERE id = ?')->execute([(int) $form['always_on'], (int) $form['node_id'] ?: null, $newId]);
             sv_audit('stream_created', "stream:$newId", ['always_on' => (int) $form['always_on']]);
             sv_flash('ok', 'Stream created. Now add a public or private access point to it.');
             sv_redirect('stream_view.php?id=' . $newId);
@@ -155,6 +165,15 @@ require __DIR__ . '/includes/layout_top.php';
     <?php if (sv_can_always_on($operator)): ?>
       <label><input type="checkbox" name="always_on" value="1" <?= $form['always_on'] === '1' ? 'checked' : '' ?>> Always on (24/7 relay)</label>
       <div class="sv-help">The gateway keeps this stream running permanently: the first viewer starts instantly and the source sees one connection instead of one per viewer. Uses one relay slot all the time.</div>
+    <?php endif; ?>
+
+    <?php if (sv_is_admin($operator)): $nodeOptions = $db->query('SELECT id, name, status FROM nodes ORDER BY name COLLATE NOCASE')->fetchAll(); ?>
+      <label for="node-select">Relay node</label>
+      <select id="node-select" name="node_id">
+        <option value="0">This server</option>
+        <?php foreach ($nodeOptions as $no): ?><option value="<?= (int) $no['id'] ?>" <?= $form['node_id'] === (string) $no['id'] ? 'selected' : '' ?>><?= h($no['name']) ?><?= $no['status'] === 'disabled' ? ' (disabled)' : '' ?></option><?php endforeach; ?>
+      </select>
+      <div class="sv-help">A node relays the stream 24/7 and viewers are redirected to it while it's online; if it goes offline, this server serves the stream again. Manage nodes on the Nodes page.</div>
     <?php endif; ?>
 
     <label>Replacement reason shown if revoked</label>

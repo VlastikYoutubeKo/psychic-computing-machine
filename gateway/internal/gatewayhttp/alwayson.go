@@ -29,6 +29,22 @@ const (
 	alwaysOnMaxBackoff = 10 * time.Minute
 )
 
+// RelayStore is where the supervisor gets its streams and reports state:
+// the database on the control gateway, an in-memory list fed by the control
+// plane's config on a relay node (internal/node).
+type RelayStore interface {
+	AlwaysOnStreams() ([]store.Stream, error)
+	SetRuntime(streamID int64, state, detail string) error
+	ClearRuntime(keep []int64) error
+}
+
+func (h *Handler) relayStore() RelayStore {
+	if h.Relays != nil {
+		return h.Relays
+	}
+	return h.Store
+}
+
 type alwaysOnState struct {
 	failures int
 	nextTry  time.Time
@@ -50,7 +66,7 @@ func (h *Handler) RunAlwaysOn(ctx context.Context, interval time.Duration) {
 }
 
 func (h *Handler) reconcileAlwaysOn(ctx context.Context, states map[int64]*alwaysOnState) {
-	streams, err := h.Store.AlwaysOnStreams()
+	streams, err := h.relayStore().AlwaysOnStreams()
 	if err != nil {
 		log.Printf("always-on: loading streams: %v", err)
 		return
@@ -119,13 +135,13 @@ func (h *Handler) reconcileAlwaysOn(ctx context.Context, states map[int64]*alway
 		log.Printf("always-on: stream %d relay running", id)
 		h.setRuntime(id, "running", "")
 	}
-	if err := h.Store.ClearRuntime(keep); err != nil {
+	if err := h.relayStore().ClearRuntime(keep); err != nil {
 		log.Printf("always-on: clearing runtime rows: %v", err)
 	}
 }
 
 func (h *Handler) setRuntime(id int64, state, detail string) {
-	if err := h.Store.SetRuntime(id, state, detail); err != nil {
+	if err := h.relayStore().SetRuntime(id, state, detail); err != nil {
 		log.Printf("always-on: recording state for stream %d: %v", id, err)
 	}
 }
