@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-09-27 -- Nodes serve through the main domain (no redirects)
+
+At the owner's request everything stays on rest.iptvlookup.com: instead of
+302-redirecting viewers to a node, the control gateway fetches the relay
+from the node with a control grant (signed, access point/token 0, 1 h) and
+rewrites its segments to this domain's encrypted /r/ references. Segments
+are proxied from the node without source credentials or redirects; the node
+address is admin-set and may be private (only the control server needs to
+reach it). If the node is offline, disabled, stale, or its relay isn't ready
+(503), the control gateway serves the stream straight from the source.
+Nodes count distinct viewers from a hashed viewer id (X-SV-Viewer) sent by
+the control gateway. Viewer bandwidth now flows through the main server;
+the node saves the source connection and can sit close to the source.
+
 ## 2026-09-27 -- Relay nodes
 
 - The same gateway binary runs as a relay node with STREAMVAULT_MODE=node.

@@ -1,17 +1,16 @@
 package gatewayhttp
 
 import (
+	"bytes"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"streamvault/gateway/internal/nodeproto"
 	"streamvault/gateway/internal/secretbox"
@@ -123,53 +122,98 @@ func TestNodeStatusMarksNodeActive(t *testing.T) {
 	}
 }
 
-func TestViewerRedirectsToOnlineNodeAndFallsBackWhenOffline(t *testing.T) {
+func TestViewerIsProxiedThroughOnlineNodeAndFallsBackToSource(t *testing.T) {
 	src := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
-		w.Write([]byte("#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:2,\na.ts\n"))
+		w.Write([]byte("#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:2,\nfrom-source.ts\n"))
 	}))
 	defer src.Close()
+	var nodeHits, badSig, viewerHdr int
+	nodeStatus := http.StatusOK
 	h, db := newTestHandler(t)
-	nodeID, _, secret := addNode(t, h, db, "https://node1.example")
+	var secret string
+	var streamID int64
+	node := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nodeHits++
+		q := r.URL.Query()
+		exp, _ := strconv.ParseInt(q.Get("exp"), 10, 64)
+		if q.Get("ap") != "0" || q.Get("tok") != "0" || !nodeproto.Verify(secret, streamID, 0, 0, exp, q.Get("sig")) {
+			badSig++
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		if len(r.Header.Get(nodeproto.ViewerHeader)) == 16 {
+			viewerHdr++
+		}
+		if nodeStatus != http.StatusOK {
+			http.Error(w, "starting", nodeStatus)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "index.m3u8") {
+			w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+			w.Write([]byte("#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:2,\nseg000001.ts?" + r.URL.RawQuery + "\n"))
+			return
+		}
+		w.Header().Set("Content-Type", "video/mp2t")
+		w.Write(bytes.Repeat(append([]byte{0x47}, make([]byte, 187)...), 3))
+	}))
+	defer node.Close()
+	nodeID, _, sec := addNode(t, h, db, node.URL)
+	secret = sec
 	apID := seedStream(t, db, src.URL+"/live.m3u8", "live/nd", "private")
 	addToken(t, db, apID, "viewer-token")
-	var streamID, tokenID int64
 	db.QueryRow(`SELECT stream_id FROM access_points WHERE id = ?`, apID).Scan(&streamID)
-	db.QueryRow(`SELECT id FROM access_tokens WHERE access_point_id = ?`, apID).Scan(&tokenID)
 	db.Exec(`UPDATE streams SET node_id = ? WHERE id = ?`, nodeID, streamID)
+	online := func() {
+		db.Exec(`UPDATE nodes SET status = 'active', last_seen_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?`, nodeID)
+	}
 
-	// Offline (never seen): served locally.
-	if got := slateRequest(t, h, "GET", "/live/nd/viewer-token.m3u8", "*/*"); got.Code != 200 || !strings.Contains(got.Body.String(), "#EXTM3U") {
-		t.Fatalf("offline node should fall back to local serving, got %d", got.Code)
-	}
-	// Online: 302 to a signed node URL.
-	db.Exec(`UPDATE nodes SET status = 'active', last_seen_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?`, nodeID)
+	// Offline (never seen): served from the source, node untouched.
 	got := slateRequest(t, h, "GET", "/live/nd/viewer-token.m3u8", "*/*")
-	if got.Code != http.StatusFound {
-		t.Fatalf("online node: expected 302, got %d", got.Code)
+	if got.Code != 200 || nodeHits != 0 {
+		t.Fatalf("offline node: code %d, node hits %d", got.Code, nodeHits)
 	}
-	loc, err := url.Parse(got.Header().Get("Location"))
-	if err != nil || loc.Host != "node1.example" || loc.Path != "/n/"+strconv.FormatInt(streamID, 10)+"/index.m3u8" {
-		t.Fatalf("redirect target: %s", got.Header().Get("Location"))
+	// Online: proxied through this domain, never a redirect.
+	online()
+	got = slateRequest(t, h, "GET", "/live/nd/viewer-token.m3u8", "*/*")
+	body := got.Body.String()
+	if got.Code != 200 || got.Header().Get("Location") != "" || !strings.Contains(body, "/live/nd/viewer-token/r/") ||
+		strings.Contains(body, node.URL) || strings.Contains(body, "sig=") || nodeHits != 1 || badSig != 0 || viewerHdr != 1 {
+		t.Fatalf("online node not proxied correctly: code=%d hits=%d badSig=%d viewer=%d body=%q", got.Code, nodeHits, badSig, viewerHdr, body)
 	}
-	q := loc.Query()
-	exp, _ := strconv.ParseInt(q.Get("exp"), 10, 64)
-	if q.Get("tok") != strconv.FormatInt(tokenID, 10) || !nodeproto.Verify(secret, streamID, int64(apID), tokenID, exp, q.Get("sig")) {
-		t.Fatalf("redirect signature does not verify: %v", q)
+	var segPath string
+	for _, l := range strings.Split(body, "\n") {
+		if strings.HasPrefix(l, "/live/nd/") {
+			segPath = l
+		}
 	}
-	if time.Until(time.Unix(exp, 0)) > 13*time.Hour {
-		t.Fatal("signed URL lives too long")
+	seg := slateRequest(t, h, "GET", segPath, "*/*")
+	if seg.Code != 200 || seg.Body.Bytes()[0] != 0x47 || nodeHits != 2 {
+		t.Fatalf("segment not proxied from node: %d hits=%d", seg.Code, nodeHits)
 	}
-	// A revoked token never reaches the node: the control serves the slate.
-	db.Exec(`UPDATE access_tokens SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?`, tokenID)
+	// Node relay not ready (503): fall back to the source.
+	nodeStatus = http.StatusServiceUnavailable
+	got = slateRequest(t, h, "GET", "/live/nd/viewer-token.m3u8", "*/*")
+	if got.Code != 200 || !strings.Contains(got.Body.String(), "/live/nd/viewer-token/r/") {
+		t.Fatalf("fallback to source failed: %d %s", got.Code, got.Body.String())
+	}
+	nodeStatus = http.StatusOK
+	// Revoked token never reaches the node.
+	hitsBefore := nodeHits
+	db.Exec(`UPDATE access_tokens SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE access_point_id = ?`, apID)
 	installFakeSlate(t, h)
-	if got := slateRequest(t, h, "GET", "/live/nd/viewer-token.m3u8", "*/*"); got.Code == http.StatusFound {
-		t.Fatal("revoked token was redirected to the node")
+	slateRequest(t, h, "GET", "/live/nd/viewer-token.m3u8", "*/*")
+	if nodeHits != hitsBefore {
+		t.Fatal("revoked token was proxied to the node")
 	}
-	// Stale heartbeat: back to local serving.
-	db.Exec(`UPDATE access_tokens SET revoked_at = NULL WHERE id = ?`, tokenID)
-	db.Exec(`UPDATE nodes SET last_seen_at = '2000-01-01T00:00:00.000Z' WHERE id = ?`, nodeID)
-	if got := slateRequest(t, h, "GET", "/live/nd/viewer-token.m3u8", "*/*"); got.Code == http.StatusFound {
-		t.Fatal("stale node still receives viewers")
+	db.Exec(`UPDATE access_tokens SET revoked_at = NULL WHERE access_point_id = ?`, apID)
+	// Disabled or stale node: source again.
+	for _, q := range []string{`UPDATE nodes SET status = 'disabled' WHERE id = ?`, `UPDATE nodes SET status = 'active', last_seen_at = '2000-01-01T00:00:00.000Z' WHERE id = ?`} {
+		db.Exec(q, nodeID)
+		hitsBefore = nodeHits
+		slateRequest(t, h, "GET", "/live/nd/viewer-token.m3u8", "*/*")
+		if nodeHits != hitsBefore {
+			t.Fatalf("node used although %q", q)
+		}
 	}
 }

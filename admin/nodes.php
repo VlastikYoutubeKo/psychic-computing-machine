@@ -37,7 +37,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $name = trim((string) ($_POST['name'] ?? ''));
             $url = rtrim(trim((string) ($_POST['public_url'] ?? '')), '/');
             if ($name === '' || mb_strlen($name) > 64 || !sv_node_public_url_valid($url)) {
-                $error = 'Enter a name (max 64 characters) and a public URL like http://203.0.113.10:8090 or https://node1.example.com (no path).';
+                $error = 'Enter a name (max 64 characters) and the node address like http://203.0.113.10:8090 (no path).';
             } else {
                 // Placeholder credentials are replaced by sv_node_issue_secret right away.
                 $db->prepare("INSERT INTO nodes (name, public_url, token_hash, secret_enc) VALUES (?, ?, 'pending', 'pending')")->execute([$name, $url]);
@@ -93,7 +93,7 @@ $pageTitle = 'Nodes';
 $activeNav = 'nodes';
 require __DIR__ . '/includes/layout_top.php';
 ?>
-<div class="sv-page-heading"><div><h1>Nodes</h1><p class="sv-help">Other servers that relay streams 24/7. Viewers keep using the same links; while a node is online they are redirected to it, otherwise this server serves the stream itself.</p></div></div>
+<div class="sv-page-heading"><div><h1>Nodes</h1><p class="sv-help">Other servers that pull streams from their sources and relay them 24/7. Viewers keep using the same links on this domain: while a node is online this server fetches the stream from it and serves it; otherwise it serves the stream straight from the source. Viewer traffic always flows through this server; a node saves the source connection and can sit close to the source.</p></div></div>
 <?php if ($error): ?><div class="sv-flash err"><?= h($error) ?></div><?php endif; ?>
 
 <?php if ($install): ?>
@@ -102,7 +102,7 @@ require __DIR__ . '/includes/layout_top.php';
   <p><strong>Shown only once.</strong> Run this on the new server (Debian/Ubuntu/Fedora/Alpine, x86_64). It installs ffmpeg, downloads the node binary from this server and starts it as a systemd service.</p>
   <?php $cmd = 'curl -fsSL ' . ($base ?: 'https://YOUR-STREAM-DOMAIN') . '/_sv/node/install.sh | sudo STREAMVAULT_NODE_TOKEN=' . $install['token'] . ' sh'; ?>
   <div class="sv-url-box"><span class="mono"><?= h($cmd) ?></span><button type="button" data-copy="<?= h($cmd) ?>" class="btn-sm">Copy</button></div>
-  <p class="sv-help">The node listens on port 8090 (set STREAMVAULT_LISTEN before sh to change it). Open that port in its firewall, or put a reverse proxy with HTTPS in front and use that as the public URL. Keep the token secret: it grants this node's streams, including source credentials. Lost it? Use “New token” below (the old one stops working immediately).</p>
+  <p class="sv-help">The node listens on port 8090 (set STREAMVAULT_LISTEN before sh to change it). Only this server needs to reach it: allow port 8090 from this server's IP and block it for everyone else (a VPN/private address works too). Keep the token secret: it grants this node's streams, including source credentials. Lost it? Use “New token” below (the old one stops working immediately).</p>
   <?php if (!$base): ?><div class="sv-flash err">Set the stream base URL in Settings first; the install command needs it.</div><?php endif; ?>
 </div>
 <?php endif; ?>
@@ -112,7 +112,7 @@ require __DIR__ . '/includes/layout_top.php';
   <form method="post">
     <?= sv_csrf_field() ?><input type="hidden" name="action" value="create">
     <label for="node-name">Name</label><input id="node-name" name="name" maxlength="64" placeholder="contabo-1" required>
-    <label for="node-url">Public URL viewers will reach</label><input id="node-url" name="public_url" maxlength="255" placeholder="http://203.0.113.10:8090 or https://node1.example.com" required>
+    <label for="node-url">Address this server uses to reach the node</label><input id="node-url" name="public_url" maxlength="255" placeholder="http://203.0.113.10:8090 (or a VPN/private address)" required>
     <button class="btn-primary" type="submit">Create node and show install command</button>
   </form>
   <p class="sv-help">After it's online, assign streams to it in each stream's settings (“Relay node”).</p>

@@ -222,17 +222,20 @@ Accepted / open:
   encrypted under a key derived from its own secret. A compromised node leaks
   those credentials: assign carefully, and use "New token" / Disable / Delete
   to cut it off (the old token stops working immediately).
-- Viewer URLs to nodes are HMAC-SHA256 over stream, access point, token and
-  expiry (12 h). Revocation does not wait for expiry: the node refuses any
-  access point or token on the revocation list it pulls every ~10 s, and a
-  disabled or stale node gets no new viewers.
+- Viewers never talk to nodes: the control gateway checks the viewer's
+  token, then fetches from the node with a control grant (HMAC-SHA256 over
+  stream, access point 0, token 0 and a 1 h expiry, embedded only inside the
+  encrypted /r/ references) and proxies it. Revoking a token therefore takes
+  effect on the control gateway immediately. The node still enforces the
+  signature and its revocation lists for any direct access, and a disabled
+  or stale node is not used. Firewall the node port to the control server.
 - The node serves only its own relay files (strict segment names); it is not
   a proxy. /healthz is the only unauthenticated path.
 - The node binary download requires the node token; install.sh is public and
   contains no secrets.
-- Known limits: leaked *node* URLs are not found by the Leak Checker (it
-  searches rest.iptvlookup.com anchors), but they carry the access point and
-  token ids, so revoking those still stops them. Node traffic is plain HTTP
-  unless you put HTTPS in front of it (then use that as the public URL).
+- Known limits: control<->node traffic is plain HTTP unless the node address
+  is HTTPS or a private/VPN link; it carries stream data and signed grants,
+  not viewer tokens. The node address is trusted by the control gateway (no
+  public-IP SSRF rule applies to it), so only admins can set it.
   Pre-existing: source Basic-auth credentials are sent with every segment
   fetch, including to other hosts a source redirects/points to.

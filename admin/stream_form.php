@@ -173,7 +173,7 @@ require __DIR__ . '/includes/layout_top.php';
         <option value="0">This server</option>
         <?php foreach ($nodeOptions as $no): ?><option value="<?= (int) $no['id'] ?>" <?= $form['node_id'] === (string) $no['id'] ? 'selected' : '' ?>><?= h($no['name']) ?><?= $no['status'] === 'disabled' ? ' (disabled)' : '' ?></option><?php endforeach; ?>
       </select>
-      <div class="sv-help">A node relays the stream 24/7 and viewers are redirected to it while it's online; if it goes offline, this server serves the stream again. Manage nodes on the Nodes page.</div>
+      <div class="sv-help">The node pulls this stream from its source and relays it 24/7; viewers still use this domain and this server fetches the stream from the node. If the node is offline, this server serves the stream straight from the source. Manage nodes on the Nodes page.</div>
     <?php endif; ?>
 
     <label>Replacement reason shown if revoked</label>

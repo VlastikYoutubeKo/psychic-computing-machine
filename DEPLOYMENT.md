@@ -373,13 +373,15 @@ it). A documented restore drill is a ROADMAP Phase 12 item.
 
 ## Relay nodes
 
-1. Admin -> Nodes -> "Add a node": name + the public URL viewers will reach
-   (http://<ip>:8090, or https://node.example.com behind a reverse proxy).
+1. Admin -> Nodes -> "Add a node": name + the address the control server uses
+   to reach the node (http://<ip>:8090, or a VPN/private address). Viewers
+   never see it: they keep using rest.iptvlookup.com.
 2. Run the one-time install command on the node (root, x86_64):
    curl -fsSL https://rest.iptvlookup.com/_sv/node/install.sh | sudo STREAMVAULT_NODE_TOKEN=svn_… sh
    It installs ffmpeg, downloads the gateway binary from the control plane,
    writes /etc/streamvault-node.env (0600) and starts streamvault-node.service.
-3. Open port 8090 on the node (or proxy it). The node shows "online" within
-   ~15 s. Assign streams in each stream's settings ("Relay node").
+3. Allow port 8090 on the node from the control server's IP only. The node
+   shows "online" within ~15 s. Assign streams in each stream's settings
+   ("Relay node").
 Update a node: rerun the install command (use "New token" if the old token
 is lost). Logs: journalctl -u streamvault-node.

@@ -67,14 +67,15 @@ check "node heartbeat marks it active (downloaded binary in node mode)" active "
 get admin nodes.php >/dev/null; grep -q ">online<" "$WORK/last.html" && ok "admin shows node online" || bad "admin does not show node online"
 check "node health endpoint" 200 "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$NODE_PORT/healthz")"
 
-# Viewer: control redirects to the node with a signature made from the
-# PHP-encrypted secret; the node (which knows the secret from its token)
-# must accept it. The source is down, so the node answers 503 "relay
-# starting" -- a 403 would mean the signature did not verify.
-LOC=$(curl -s -o /dev/null -w '%{redirect_url}' "$C/relayed.m3u8")
-case "$LOC" in "http://127.0.0.1:$NODE_PORT/n/$SID/index.m3u8?"*) ok "viewer redirected to node";; *) bad "no redirect to node: '$LOC'";; esac
-check "node accepts the control-signed URL" 503 "$(curl -s -o /dev/null -w '%{http_code}' "$LOC")"
-check "node rejects a tampered signature" 403 "$(curl -s -o /dev/null -w '%{http_code}' "$(echo "$LOC" | sed -E 's/sig=[0-9a-f]+/sig=00/')")"
+# Viewer: the control gateway proxies from the node (single domain). The
+# source is down, so the node's relay isn't ready and answers 503, which
+# makes the control fall back to the source; its log proves the node
+# ACCEPTED the control-signed request (a bad signature would log 403).
+curl -s -o "$WORK/viewer.out" -w '%{http_code} %{redirect_url}\n' "$C/relayed.m3u8" > "$WORK/viewer.code"
+grep -q "^[0-9]* $" "$WORK/viewer.code" && ok "viewer is not redirected (single domain)" || bad "viewer redirected: $(cat "$WORK/viewer.code")"
+sleep 1
+grep -q "node $NODE_ID returned HTTP 503 for stream $SID, serving locally" "$WORK/ctl.log" && ok "node accepted the control-signed request (PHP->Go secret)" || bad "control did not reach the node with a valid signature: $(grep -i node "$WORK/ctl.log" | tail -3)"
+check "node rejects an unsigned request" 403 "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$NODE_PORT/n/$SID/index.m3u8?ap=0&tok=0&exp=9999999999&sig=00")"
 
 # --- access control and token lifecycle -----------------------------------------------
 post admin accounts.php action=create username=bob max_streams=2 max_access_points=3 >/dev/null
@@ -92,7 +93,9 @@ check "old token rejected after reissue" 401 "$(curl -s -o /dev/null -w '%{http_
 check "new token works" 200 "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $NEW" "$C/_sv/node/config")"
 post admin nodes.php action=toggle "node_id=$NODE_ID" >/dev/null
 check "disabled node rejected" 401 "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $NEW" "$C/_sv/node/config")"
-check "disabled node gets no viewers" "" "$(curl -s -o /dev/null -w '%{redirect_url}' "$C/relayed.m3u8")"
+before=$(grep -c "node $NODE_ID returned" "$WORK/ctl.log")
+curl -s -o /dev/null "$C/relayed.m3u8"; sleep 1
+check "disabled node is not used for viewers" "$before" "$(grep -c "node $NODE_ID returned" "$WORK/ctl.log")"
 post admin nodes.php action=delete "node_id=$NODE_ID" >/dev/null
 check "deleting a node returns its streams to this server" "" "$(q "SELECT IFNULL(node_id,'') FROM streams WHERE id=$SID")"
 

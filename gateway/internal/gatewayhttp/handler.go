@@ -218,7 +218,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if remainder == "" {
-		if h.redirectToNode(w, r, ap, tokenInfo) {
+		if h.serveFromNode(w, r, ap, prefix) {
 			return
 		}
 		h.serveEntry(w, r, ap, sourceEntry, prefix)
@@ -256,6 +256,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// so this is about SSRF, not about the blob being forged -- see
 	// checkFetchTarget's doc comment for the actual policy and why a
 	// simple "must match the source's own host" rule broke real streams.
+	if isNodeTarget(ap, target) {
+		h.serveNodeResource(w, r, ap, target, prefix)
+		return
+	}
 	if err := checkFetchTarget(r.Context(), h.Resolve, target, h.isSourcePrivate(r.Context(), ap.Stream, sourceEntry)); err != nil {
 		log.Printf("blocked resource fetch for stream %d: %v", ap.Stream.ID, err)
 		http.Error(w, "forbidden", http.StatusForbidden)

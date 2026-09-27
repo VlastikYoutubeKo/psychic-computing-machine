@@ -313,7 +313,7 @@ func (n *Node) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	if name == "index.m3u8" {
-		n.noteViewer(streamID, r)
+		n.noteViewer(streamID, r, ap == 0 && tok == 0)
 		data, err := os.ReadFile(path)
 		if err != nil {
 			w.Header().Set("Retry-After", "5")
@@ -369,7 +369,15 @@ func signSegments(playlist, rawQuery string) string {
 	return b.String()
 }
 
-func (n *Node) noteViewer(streamID int64, r *http.Request) {
+func (n *Node) noteViewer(streamID int64, r *http.Request, viaControl bool) {
+	// Requests proxied by the control gateway (control grant, ap=0/tok=0)
+	// all come from the control IP; count its hashed viewer id instead.
+	if viaControl {
+		if id := r.Header.Get(nodeproto.ViewerHeader); len(id) == 16 && isHex(id) {
+			n.recordViewer(streamID, "v:"+id)
+			return
+		}
+	}
 	ip, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		ip = r.RemoteAddr
@@ -381,12 +389,25 @@ func (n *Node) noteViewer(streamID int64, r *http.Request) {
 			ip = xff
 		}
 	}
+	n.recordViewer(streamID, ip)
+}
+
+func (n *Node) recordViewer(streamID int64, key string) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if n.viewers[streamID] == nil {
 		n.viewers[streamID] = map[string]time.Time{}
 	}
-	n.viewers[streamID][ip] = time.Now()
+	n.viewers[streamID][key] = time.Now()
+}
+
+func isHex(s string) bool {
+	for _, c := range s {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // --- host metrics (Linux /proc; zero where unavailable) --------------------

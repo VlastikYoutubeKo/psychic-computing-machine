@@ -75,6 +75,16 @@ func Verify(secret string, streamID, accessPointID, tokenID, exp int64, sig stri
 	return hmac.Equal([]byte(want), []byte(sig))
 }
 
+// ViewerHeader carries a hashed viewer IP from the control gateway to the
+// node, so a node behind the control plane can still count distinct viewers.
+const ViewerHeader = "X-SV-Viewer"
+
+// ViewerID hashes an IP for ViewerHeader (never the raw address).
+func ViewerID(ip string) string {
+	sum := sha256.Sum256([]byte("streamvault-viewer\x00" + ip))
+	return hex.EncodeToString(sum[:8])
+}
+
 // StreamConfig is one stream the node must relay. SourcePasswordEnc is
 // encrypted with ConfigKey(secret), never sent in plaintext.
 type StreamConfig struct {

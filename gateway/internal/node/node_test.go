@@ -154,7 +154,8 @@ func TestViewerIsRelayedByNodeAndRevocationReachesNode(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	// Viewer: control -> 302 -> node playlist -> signed segment.
+	// Viewer: everything on the control domain; the control gateway fetches
+	// the relay from the node and rewrites segments to its own /r/ refs.
 	resp, err = http.Get(ctlSrv.URL + "/live/relay/viewer-token.m3u8")
 	if err != nil {
 		t.Fatal(err)
@@ -162,18 +163,17 @@ func TestViewerIsRelayedByNodeAndRevocationReachesNode(t *testing.T) {
 	playlist, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	final := resp.Request.URL
-	if resp.StatusCode != 200 || final.Host != nodeAddr || !strings.Contains(string(playlist), "sig=") {
-		t.Fatalf("viewer not served by node: %d host=%s body=%q", resp.StatusCode, final.Host, playlist)
+	if resp.StatusCode != 200 || final.Host != strings.TrimPrefix(ctlSrv.URL, "http://") || strings.Contains(string(playlist), nodeAddr) || !strings.Contains(string(playlist), "/live/relay/viewer-token/r/") {
+		t.Fatalf("viewer not proxied via control: %d host=%s body=%q", resp.StatusCode, final.Host, playlist)
 	}
 	var segLine string
 	for _, l := range strings.Split(string(playlist), "\n") {
-		if strings.HasPrefix(l, "seg") {
+		if strings.HasPrefix(l, "/live/relay/") {
 			segLine = l
 			break
 		}
 	}
-	segURL, _ := final.Parse(segLine)
-	sresp, err := http.Get(segURL.String())
+	sresp, err := http.Get(ctlSrv.URL + segLine)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,24 +181,26 @@ func TestViewerIsRelayedByNodeAndRevocationReachesNode(t *testing.T) {
 	io.ReadFull(sresp.Body, head)
 	sresp.Body.Close()
 	if sresp.StatusCode != 200 || head[0] != 0x47 {
-		t.Fatalf("segment from node: %d first byte %x", sresp.StatusCode, head)
+		t.Fatalf("segment via control from node: %d first byte %x", sresp.StatusCode, head)
+	}
+	n.mu.RLock()
+	viewers := len(n.viewers[streamID])
+	n.mu.RUnlock()
+	if viewers != 1 {
+		t.Fatalf("node should count the proxied viewer once, got %d", viewers)
 	}
 
-	// Tampered signature.
-	bad := *final
-	q := bad.Query()
-	q.Set("sig", strings.Repeat("0", 64))
-	bad.RawQuery = q.Encode()
-	if r, _ := http.Get(bad.String()); r.StatusCode != http.StatusForbidden {
-		t.Fatalf("tampered signature: %d", r.StatusCode)
+	// The node itself refuses anything not signed by the control plane.
+	if r, _ := http.Get(fmt.Sprintf("http://%s/n/%d/index.m3u8?ap=0&tok=0&exp=9999999999&sig=%s", nodeAddr, streamID, strings.Repeat("0", 64))); r.StatusCode != http.StatusForbidden {
+		t.Fatalf("unsigned node request: %d", r.StatusCode)
 	}
 
-	// Revoke the token: after the node's next poll its signed URL stops working.
+	// Revoke the token: the control gateway stops proxying at once.
 	raw.Exec(`UPDATE access_tokens SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE access_point_id = ?`, apID)
-	if err := n.pollOnce(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if r, _ := http.Get(final.String()); r.StatusCode != http.StatusGone {
-		t.Fatalf("revoked token still served by node: %d", r.StatusCode)
+	resp, _ = http.Get(ctlSrv.URL + "/live/relay/viewer-token.m3u8")
+	after, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if strings.Contains(string(after), "/live/relay/viewer-token/r/") {
+		t.Fatalf("revoked token still proxied: %q", after)
 	}
 }

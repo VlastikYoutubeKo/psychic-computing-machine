@@ -1,6 +1,7 @@
 package gatewayhttp
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,7 +28,7 @@ import (
 const (
 	nodePollSeconds   = 10
 	nodeOnlineWindow  = 45 * time.Second // heartbeat age after which a node counts as offline
-	nodeURLLifetime   = 12 * time.Hour   // signed viewer URLs; revocation is enforced by the lists
+	nodeGrantLifetime = time.Hour        // control-plane grants embedded in /r/ references
 	maxNodeStatusBody = 64 << 10
 )
 
@@ -165,9 +166,13 @@ func nodeOnline(n *store.NodeRef, now time.Time) bool {
 	return now.Sub(seen) <= nodeOnlineWindow
 }
 
-// redirectToNode sends an entry request to the stream's relay node with a
-// signed URL, if the node is online. False means "serve locally".
-func (h *Handler) redirectToNode(w http.ResponseWriter, r *http.Request, ap *store.AccessPoint, token store.TokenInfo) bool {
+// serveFromNode serves an entry request through the stream's relay node:
+// the control gateway fetches the node's playlist with a control grant
+// (access point 0, token 0) and rewrites its segments to this domain's
+// encrypted /r/ references, so viewers only ever see rest.iptvlookup.com and
+// the node can stay private. False means "serve locally" (node offline,
+// relay not ready, or an error) -- the caller falls back to the source.
+func (h *Handler) serveFromNode(w http.ResponseWriter, r *http.Request, ap *store.AccessPoint, prefix string) bool {
 	n := ap.Stream.Node
 	if !nodeOnline(n, time.Now()) || h.Key == nil {
 		return false
@@ -177,14 +182,90 @@ func (h *Handler) redirectToNode(w http.ResponseWriter, r *http.Request, ap *sto
 		log.Printf("node %d: secret unreadable, serving stream %d locally", n.ID, ap.Stream.ID)
 		return false
 	}
-	target, err := nodeViewerURL(n.PublicURL, string(secret), ap.Stream.ID, ap.ID, token.ID, time.Now().Add(nodeURLLifetime).Unix())
+	raw, err := nodeViewerURL(n.PublicURL, string(secret), ap.Stream.ID, 0, 0, time.Now().Add(nodeGrantLifetime).Unix())
 	if err != nil {
 		log.Printf("node %d: bad public URL, serving stream %d locally", n.ID, ap.Stream.ID)
 		return false
 	}
-	w.Header().Set("Cache-Control", "no-store")
-	http.Redirect(w, r, target, http.StatusFound)
+	target, _ := url.Parse(raw)
+	resp, err := h.nodeFetch(r.Context(), target, r, 10*time.Second)
+	if err != nil {
+		log.Printf("node %d unreachable for stream %d (%s), serving locally", n.ID, ap.Stream.ID, fetchFailureKind(err))
+		return false
+	}
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		log.Printf("node %d returned HTTP %d for stream %d, serving locally", n.ID, resp.StatusCode, ap.Stream.ID)
+		return false
+	}
+	if !h.sniffAndServe(w, r, resp, resp.Request.URL, prefix, ap, true) {
+		resp.Body.Close()
+	}
 	return true
+}
+
+// isNodeTarget: a decoded /r/ reference that points at this stream's own
+// relay node (as rewritten by serveFromNode).
+func isNodeTarget(ap *store.AccessPoint, target *url.URL) bool {
+	n := ap.Stream.Node
+	if n == nil {
+		return false
+	}
+	base, err := url.Parse(n.PublicURL)
+	if err != nil {
+		return false
+	}
+	return target.Scheme == base.Scheme && target.Host == base.Host &&
+		strings.HasPrefix(target.Path, fmt.Sprintf("/n/%d/", ap.Stream.ID))
+}
+
+// serveNodeResource streams a segment (or nested playlist) from the node.
+func (h *Handler) serveNodeResource(w http.ResponseWriter, r *http.Request, ap *store.AccessPoint, target *url.URL, prefix string) {
+	resp, err := h.nodeFetch(r.Context(), target, r, 20*time.Second)
+	if err != nil {
+		log.Printf("node segment for stream %d failed: %s", ap.Stream.ID, fetchFailureKind(err))
+		w.Header().Set("Retry-After", "5")
+		http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		w.Header().Set("Retry-After", "5")
+		http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	h.sniffAndServe(w, r, resp, resp.Request.URL, prefix, ap, false)
+}
+
+// nodeFetch talks to a relay node: no source credentials (the node is
+// authorized by the signed query), no redirects, and no public-IP SSRF rule
+// -- the node address is admin-configured and may be private (VPN/LAN).
+func (h *Handler) nodeFetch(ctx context.Context, target *url.URL, viewer *http.Request, timeout time.Duration) (*http.Response, error) {
+	client := &http.Client{
+		Timeout:       timeout,
+		Transport:     h.Transport,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "streamvault-control")
+	req.Header.Set(nodeproto.ViewerHeader, nodeproto.ViewerID(viewerIP(viewer)))
+	return client.Do(req)
+}
+
+// viewerIP: the gateway sits behind Caddy (and Cloudflare), reachable only
+// on the internal network, so the forwarded headers are Caddy's. Only used
+// to count distinct viewers on nodes.
+func viewerIP(r *http.Request) string {
+	if ip := r.Header.Get("CF-Connecting-IP"); ip != "" {
+		return ip
+	}
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		return strings.TrimSpace(strings.Split(xff, ",")[0])
+	}
+	return r.RemoteAddr
 }
 
 func nodeViewerURL(publicURL, secret string, streamID, apID, tokenID, exp int64) (string, error) {
