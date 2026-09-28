@@ -121,6 +121,7 @@ type StreamStatus struct {
 // Status is POST /_sv/node/status.
 type Status struct {
 	Version        string         `json:"version"`
+	BinarySHA256   string         `json:"binary_sha256,omitempty"`
 	UptimeSeconds  int64          `json:"uptime_seconds"`
 	Load1          float64        `json:"load1"`
 	CPUs           int            `json:"cpus"`

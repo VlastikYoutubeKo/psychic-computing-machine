@@ -59,11 +59,33 @@ cmp -s "$WORK/node-bin" "$WORK/gw" && ok "downloaded binary is the gateway execu
 check "config with PHP-created token (PHP->Go crypto)" 200 "$(curl -s -o "$WORK/cfg.json" -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "$C/_sv/node/config")"
 grep -q "\"id\":$SID" "$WORK/cfg.json" && ok "config lists the assigned stream" || bad "assigned stream missing from config"
 
+
+# --- auto-update script (extracted from install.sh, paths redirected into $WORK) ---
+check "binary.sha256 requires token" 401 "$(curl -s -o /dev/null -w '%{http_code}' "$C/_sv/node/binary.sha256")"
+check "binary.sha256 matches the gateway executable" "$(sha256sum "$WORK/gw" | cut -d' ' -f1)" "$(curl -s -H "Authorization: Bearer $TOKEN" "$C/_sv/node/binary.sha256" | tr -d '[:space:]')"
+mkdir -p "$WORK/upd"
+sed -n "/^cat > \/opt\/streamvault-node\/update.sh <<'UPDATER'$/,/^UPDATER$/p" "$WORK/install.sh" | sed '1d;$d' \
+  | sed -e "s#/opt/streamvault-node#$WORK/upd#g" -e "s#/etc/streamvault-node.env#$WORK/upd/env#g" > "$WORK/upd/update.sh"
+grep -q 'binary.sha256' "$WORK/upd/update.sh" && ok "install.sh embeds the updater" || bad "updater not found in install.sh"
+printf 'STREAMVAULT_CONTROL_URL=%s\nSTREAMVAULT_NODE_TOKEN=%s\n' "$C" "$TOKEN" > "$WORK/upd/env"
+sh "$WORK/upd/update.sh" >"$WORK/upd/log1" 2>&1
+cmp -s "$WORK/upd/streamvault-gateway" "$WORK/gw" && grep -q "updated to" "$WORK/upd/log1" && ok "updater installs the verified binary" || bad "updater first run: $(cat "$WORK/upd/log1")"
+sh "$WORK/upd/update.sh" >"$WORK/upd/log2" 2>&1
+[ ! -s "$WORK/upd/log2" ] && ok "updater is a no-op when up to date" || bad "updater second run: $(cat "$WORK/upd/log2")"
+echo outdated > "$WORK/upd/streamvault-gateway"
+sh "$WORK/upd/update.sh" >"$WORK/upd/log3" 2>&1
+cmp -s "$WORK/upd/streamvault-gateway" "$WORK/gw" && ok "updater replaces an outdated binary" || bad "updater did not replace outdated binary: $(cat "$WORK/upd/log3")"
+printf 'STREAMVAULT_CONTROL_URL=%s\nSTREAMVAULT_NODE_TOKEN=svn_1_bad\n' "$C" > "$WORK/upd/env"
+echo outdated > "$WORK/upd/streamvault-gateway"
+sh "$WORK/upd/update.sh" >/dev/null 2>&1 && bad "updater succeeded with a bad token" || ok "updater fails closed with a bad token"
+check "bad token leaves the binary untouched" outdated "$(cat "$WORK/upd/streamvault-gateway")"
+
 chmod +x "$WORK/node-bin"
 STREAMVAULT_MODE=node STREAMVAULT_CONTROL_URL="$C" STREAMVAULT_NODE_TOKEN="$TOKEN" STREAMVAULT_LISTEN="127.0.0.1:$NODE_PORT" \
   "$WORK/node-bin" >"$WORK/node.log" 2>&1 & PIDS="$PIDS $!"
 for i in $(seq 1 40); do [ "$(q "SELECT status FROM nodes WHERE id=$NODE_ID")" = active ] && break; sleep 1; done
 check "node heartbeat marks it active (downloaded binary in node mode)" active "$(q "SELECT status FROM nodes WHERE id=$NODE_ID")"
+grep -q "\"binary_sha256\":\"$(sha256sum "$WORK/gw" | cut -d' ' -f1)\"" <<< "$(q "SELECT last_status_json FROM nodes WHERE id=$NODE_ID")" && ok "heartbeat reports the node binary hash" || bad "heartbeat lacks binary hash"
 get admin nodes.php >/dev/null; grep -q ">online<" "$WORK/last.html" && ok "admin shows node online" || bad "admin does not show node online"
 # Always-on state of a node-assigned stream comes from the node heartbeat, not stream_runtime.
 q "UPDATE streams SET always_on=1 WHERE id=$SID"

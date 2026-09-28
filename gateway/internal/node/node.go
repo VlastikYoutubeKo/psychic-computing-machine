@@ -280,6 +280,7 @@ func (n *Node) statusLoop(ctx context.Context) {
 
 func (n *Node) collectStatus() nodeproto.Status {
 	st := nodeproto.Status{Version: n.cfg.Version, UptimeSeconds: int64(time.Since(n.started).Seconds()), CPUs: runtime.NumCPU(), Streams: []nodeproto.StreamStatus{}}
+	st.BinarySHA256, _ = nodeproto.ExecutableSHA256()
 	st.Load1 = readLoad1()
 	st.MemTotalKB, st.MemAvailableKB = readMem()
 	st.NetRxBytes, st.NetTxBytes = readNet()

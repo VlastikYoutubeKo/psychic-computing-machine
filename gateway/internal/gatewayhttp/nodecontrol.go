@@ -22,6 +22,7 @@ import (
 //
 //   GET  /_sv/node/install.sh  public install script (no secrets inside)
 //   GET  /_sv/node/binary      this gateway executable        [node token]
+//   GET  /_sv/node/binary.sha256  its hex SHA-256 (auto-update)  [node token]
 //   GET  /_sv/node/config      streams + revocations           [node token]
 //   POST /_sv/node/status      heartbeat and metrics           [node token]
 
@@ -40,6 +41,16 @@ func (h *Handler) serveNodeAPI(w http.ResponseWriter, r *http.Request) {
 	case path == "binary" && r.Method == http.MethodGet:
 		if _, _, ok := h.authNode(w, r); ok {
 			h.serveNodeBinary(w, r)
+		}
+	case path == "binary.sha256" && r.Method == http.MethodGet:
+		if _, _, ok := h.authNode(w, r); ok {
+			sum, err := nodeproto.ExecutableSHA256()
+			if err != nil {
+				http.Error(w, "binary unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			io.WriteString(w, sum+"\n")
 		}
 	case path == "config" && r.Method == http.MethodGet:
 		if n, secret, ok := h.authNode(w, r); ok {
@@ -329,9 +340,30 @@ if ! command -v ffmpeg >/dev/null 2>&1; then
 fi
 
 install -d -m 0755 /opt/streamvault-node
-curl -fsS -H "Authorization: Bearer $TOKEN" -o /opt/streamvault-node/streamvault-gateway.new "$CONTROL/_sv/node/binary"
-chmod 0755 /opt/streamvault-node/streamvault-gateway.new
-mv /opt/streamvault-node/streamvault-gateway.new /opt/streamvault-node/streamvault-gateway
+
+# Updater: re-downloads the binary whenever the control gateway's hash
+# differs, verifies it, swaps it in and restarts the node. It runs as root
+# from a timer, so the node service itself never gets write access to its
+# own binary.
+cat > /opt/streamvault-node/update.sh <<'UPDATER'
+#!/bin/sh
+set -eu
+. /etc/streamvault-node.env
+BIN=/opt/streamvault-node/streamvault-gateway
+AUTH="Authorization: Bearer $STREAMVAULT_NODE_TOKEN"
+want=$(curl -fsS --max-time 30 -H "$AUTH" "$STREAMVAULT_CONTROL_URL/_sv/node/binary.sha256" | tr -d '[:space:]')
+case "$want" in *[!0-9a-f]*|"") echo "control returned an invalid hash" >&2; exit 1;; esac
+[ "${#want}" -eq 64 ] || { echo "control returned an invalid hash" >&2; exit 1; }
+if [ -f "$BIN" ] && [ "$(sha256sum "$BIN" | cut -d' ' -f1)" = "$want" ]; then exit 0; fi
+curl -fsS --max-time 600 -H "$AUTH" -o "$BIN.new" "$STREAMVAULT_CONTROL_URL/_sv/node/binary"
+got=$(sha256sum "$BIN.new" | cut -d' ' -f1)
+if [ "$got" != "$want" ]; then rm -f "$BIN.new"; echo "downloaded binary hash mismatch; retrying next run" >&2; exit 1; fi
+chmod 0755 "$BIN.new"
+mv "$BIN.new" "$BIN"
+echo "streamvault-node updated to $want"
+if systemctl is-enabled --quiet streamvault-node 2>/dev/null; then systemctl restart streamvault-node; fi
+UPDATER
+chmod 0700 /opt/streamvault-node/update.sh
 id streamvault-node >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin streamvault-node
 
 umask 077
@@ -342,6 +374,7 @@ STREAMVAULT_NODE_TOKEN=$TOKEN
 STREAMVAULT_LISTEN=$LISTEN
 EOF
 umask 022
+/opt/streamvault-node/update.sh
 
 cat > /etc/systemd/system/streamvault-node.service <<'EOF'
 [Unit]
@@ -363,7 +396,30 @@ PrivateTmp=true
 [Install]
 WantedBy=multi-user.target
 EOF
+cat > /etc/systemd/system/streamvault-node-update.service <<'EOF'
+[Unit]
+Description=StreamVault node auto-update
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/streamvault-node/update.sh
+EOF
+cat > /etc/systemd/system/streamvault-node-update.timer <<'EOF'
+[Unit]
+Description=Check for a new StreamVault node binary every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+RandomizedDelaySec=30s
+
+[Install]
+WantedBy=timers.target
+EOF
 systemctl daemon-reload
+systemctl enable --now streamvault-node-update.timer
 systemctl enable --now streamvault-node
 systemctl restart streamvault-node
 echo "StreamVault node installed and started (listening on $LISTEN)."
