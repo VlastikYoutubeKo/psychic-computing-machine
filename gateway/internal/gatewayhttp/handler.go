@@ -347,8 +347,19 @@ func (h *Handler) encodeRef(prefix string, accessPointID int64) hls.EncodeFunc {
 	}
 }
 
-func sourceSignature(s store.Stream) string {
-	sum := sha256.Sum256([]byte(s.SourceURL + "\x00" + s.SourceUsername.String + "\x00" + s.SourcePasswordEnc.String))
+// sourceSignature identifies a stream's source so a running remux session is
+// reused only while URL and credentials are unchanged. It hashes the
+// decrypted password, not the ciphertext: encryption uses a fresh nonce, and
+// nodes receive newly encrypted credentials on every config poll, so hashing
+// the ciphertext restarted node relays every few seconds.
+func (h *Handler) sourceSignature(s store.Stream) string {
+	pw := s.SourcePasswordEnc.String
+	if s.SourcePasswordEnc.Valid {
+		if plain, err := secretbox.Decrypt(h.Key, s.SourcePasswordEnc.String); err == nil {
+			pw = "plain:" + string(plain)
+		}
+	}
+	sum := sha256.Sum256([]byte(s.SourceURL + "\x00" + s.SourceUsername.String + "\x00" + pw))
 	return hex.EncodeToString(sum[:])
 }
 
@@ -374,12 +385,12 @@ func sourceSignature(s store.Stream) string {
 // leans on elsewhere (see SECURITY.md) -- so this is judged an acceptable
 // risk rather than one worth a bespoke read-deadline mechanism right now.
 func (h *Handler) serveEntry(w http.ResponseWriter, r *http.Request, ap *store.AccessPoint, sourceEntry *url.URL, prefix string) {
-	if !ap.Stream.AllowRemux && h.Remux.Existing(ap.Stream.ID, sourceSignature(ap.Stream)) != nil {
+	if !ap.Stream.AllowRemux && h.Remux.Existing(ap.Stream.ID, h.sourceSignature(ap.Stream)) != nil {
 		log.Printf("remux refused for stream %d: owner lacks permission", ap.Stream.ID)
 		h.writeTemporaryFailure(w, r)
 		return
 	}
-	if s := h.Remux.Existing(ap.Stream.ID, sourceSignature(ap.Stream)); s != nil {
+	if s := h.Remux.Existing(ap.Stream.ID, h.sourceSignature(ap.Stream)); s != nil {
 		h.writeRemuxPlaylist(w, ap, s, prefix)
 		return
 	}
@@ -587,7 +598,7 @@ func (p *prefixedReadCloser) Close() error {
 // request to the same entry point is exactly what got this project's own
 // first real production stream rate-limited by its origin.
 func (h *Handler) serveRemuxEntry(w http.ResponseWriter, ap *store.AccessPoint, body io.ReadCloser, prefix string) {
-	sig := sourceSignature(ap.Stream)
+	sig := h.sourceSignature(ap.Stream)
 	used := false
 	s, err := h.Remux.Start(ap.Stream.ID, sig, func(ctx context.Context) (io.ReadCloser, error) {
 		used = true

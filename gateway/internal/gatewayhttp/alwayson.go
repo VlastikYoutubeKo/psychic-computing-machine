@@ -132,7 +132,7 @@ func (h *Handler) reconcileAlwaysOn(ctx context.Context, states map[int64]*alway
 			}
 			stt.runningSince = time.Time{}
 		}
-		sig := sourceSignature(st)
+		sig := h.sourceSignature(st)
 		if h.Remux.Existing(id, sig) != nil {
 			h.Remux.SetPinned(id, true)
 			if !stt.runningSince.IsZero() && time.Since(stt.runningSince) >= alwaysOnMinHealthy {
