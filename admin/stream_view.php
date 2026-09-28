@@ -152,11 +152,29 @@ require __DIR__ . '/includes/layout_top.php';
         $rt = $db->prepare('SELECT state, detail, updated_at FROM stream_runtime WHERE stream_id = ?');
         $rt->execute([$id]);
         $runtime = $rt->fetch();
+        if (!empty($stream['node_id'])) {
+            // Node-assigned streams are relayed by the node; their state arrives in its heartbeat.
+            $runtime = false;
+            $ns = $db->prepare('SELECT name, last_seen_at, last_status_json FROM nodes WHERE id = ?');
+            $ns->execute([(int) $stream['node_id']]);
+            if ($node = $ns->fetch()) {
+                $report = json_decode((string) $node['last_status_json'], true);
+                foreach (($report['streams'] ?? []) as $ent) {
+                    if ((int) ($ent['id'] ?? 0) === $id) {
+                        $runtime = [
+                            'state' => (string) ($ent['state'] ?? 'pending'),
+                            'detail' => 'on node ' . $node['name'] . (!empty($ent['detail']) ? ': ' . $ent['detail'] : ''),
+                            'updated_at' => (string) $node['last_seen_at'],
+                        ];
+                    }
+                }
+            }
+        }
         $state = $runtime['state'] ?? 'pending';
         $badge = $state === 'running' ? 'active' : ($state === 'starting' || $state === 'pending' ? 'private' : 'revoked'); ?>
         <span class="badge <?= h($badge) ?>"><?= h($state) ?></span>
         <?php if (!empty($runtime['detail'])): ?> <span class="sv-help"><?= h($runtime['detail']) ?></span><?php endif; ?>
-        <?php if ($runtime): ?> <span class="sv-help">(updated <?= h($runtime['updated_at']) ?>)</span><?php else: ?> <span class="sv-help">the gateway picks it up within ~15 s</span><?php endif; ?>
+        <?php if ($runtime): ?> <span class="sv-help">(updated <?= h($runtime['updated_at']) ?>)</span><?php else: ?> <span class="sv-help"><?= empty($stream['node_id']) ? 'the gateway picks it up within ~15 s' : 'waiting for the node\'s next heartbeat' ?></span><?php endif; ?>
       <?php endif; ?></td></tr>
   </table>
   <form method="post" style="margin-top:1rem;display:inline;">

@@ -65,6 +65,12 @@ STREAMVAULT_MODE=node STREAMVAULT_CONTROL_URL="$C" STREAMVAULT_NODE_TOKEN="$TOKE
 for i in $(seq 1 40); do [ "$(q "SELECT status FROM nodes WHERE id=$NODE_ID")" = active ] && break; sleep 1; done
 check "node heartbeat marks it active (downloaded binary in node mode)" active "$(q "SELECT status FROM nodes WHERE id=$NODE_ID")"
 get admin nodes.php >/dev/null; grep -q ">online<" "$WORK/last.html" && ok "admin shows node online" || bad "admin does not show node online"
+# Always-on state of a node-assigned stream comes from the node heartbeat, not stream_runtime.
+q "UPDATE streams SET always_on=1 WHERE id=$SID"
+q "UPDATE nodes SET last_status_json='{\"streams\":[{\"id\":$SID,\"state\":\"backoff\",\"detail\":\"probe-detail\"}]}' WHERE id=$NODE_ID"
+get admin "stream_view.php?id=$SID" >/dev/null
+grep -q ">backoff<" "$WORK/last.html" && grep -q "on node node-a: probe-detail" "$WORK/last.html" && ok "stream view shows node-reported always-on state" || bad "stream view ignores node-reported state"
+q "UPDATE streams SET always_on=0 WHERE id=$SID"
 check "node health endpoint" 200 "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$NODE_PORT/healthz")"
 
 # Viewer: the control gateway proxies from the node (single domain). The

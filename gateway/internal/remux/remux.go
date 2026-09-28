@@ -340,10 +340,15 @@ func (m *Manager) GetPath(streamID int64, id, name string) (string, bool) {
 	return p, true
 }
 
+// firstSegmentTimeout bounds how long WaitPlaylist waits. With -c copy the
+// first segment can only close on the second keyframe, so sources with a
+// 10 s GOP plus DVB tuning time (Tvheadend) need well over 15 s.
+const firstSegmentTimeout = 35 * time.Second
+
 // WaitPlaylist waits for FFmpeg's first completed HLS segment. FFmpeg writes
 // the manifest atomically, so a visible file is ready to parse.
 func (m *Manager) WaitPlaylist(s *Session) (string, error) {
-	deadline := time.NewTimer(15 * time.Second)
+	deadline := time.NewTimer(firstSegmentTimeout)
 	defer deadline.Stop()
 	tick := time.NewTicker(100 * time.Millisecond)
 	defer tick.Stop()
