@@ -132,6 +132,10 @@ login bob bob-password-123 >/dev/null
 post bob xtream_import.php action=connect "server=$X" "username=$XUSER" "password=$XPASS" >/dev/null
 grep -q "must be a public address" "$WORK/last.html" && ok "non-admin cannot connect to a private address" || bad "non-admin private connect not rejected"
 check "no request was sent for the rejected connect" 0 "$(wc -l < "$WORK/panel.log" | tr -d ' ')"
+# PHP 8.2's filter_var calls IPv4-mapped IPv6 "public"; it must still be refused.
+post bob xtream_import.php action=connect "server=http://[::ffff:127.0.0.1]:$XT_PORT" "username=$XUSER" "password=$XPASS" >/dev/null
+grep -q "must be a public address" "$WORK/last.html" && ok "non-admin cannot use an IPv4-mapped IPv6 literal" || bad "IPv4-mapped literal not rejected"
+check "no request was sent for the IPv4-mapped literal" 0 "$(wc -l < "$WORK/panel.log" | tr -d ' ')"
 check "bob has no session connection (import refused)" 302 "$(post bob xtream_import.php action=import 'ids[]=103')"
 check "bob created nothing" 0 "$(q "SELECT COUNT(*) FROM streams WHERE owner_id=(SELECT id FROM operators WHERE username='bob')")"
 check "bob cannot see admin's imported stream" 404 "$(get bob "stream_view.php?id=$SID")"

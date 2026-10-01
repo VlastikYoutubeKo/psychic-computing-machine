@@ -39,4 +39,23 @@ curl -s -c "$J" -b "$J" -o /dev/null --data-urlencode "csrf=$CSRF" "$B/logout.ph
 check "POST logout with CSRF logs out" 302 "$(curl -s -c "$J" -b "$J" -o /dev/null -w '%{http_code}' "$B/index.php")"
 check "successful login cleared IP failures" 0 "$(sqlite3 "$STREAMVAULT_DB" "SELECT COUNT(*) FROM login_attempts WHERE created_at > '2001-01-01'")"
 
+# --- persistent login: 3 days since the last request, own session directory -------
+J2="$WORK/c2"
+t2=$(curl -s -c "$J2" -b "$J2" "$B/login.php" | grep -o 'name="csrf" value="[^"]*"' | head -1 | sed -E 's/.*value="([^"]*)"/\1/')
+curl -s -c "$J2" -b "$J2" -o /dev/null --data-urlencode "csrf=$t2" --data-urlencode username=admin --data-urlencode password=correct-horse-battery "$B/login.php"
+check "logged in" 200 "$(curl -s -c "$J2" -b "$J2" -o /dev/null -w '%{http_code}' "$B/index.php")"
+EXP=$(awk '$6=="streamvault_admin"{print $5}' "$J2"); NOW=$(date +%s)
+[ -n "$EXP" ] && [ "$EXP" -gt $((NOW + 3*86400 - 300)) ] && [ "$EXP" -le $((NOW + 3*86400 + 300)) ] \
+  && echo "PASS: session cookie persists ~3 days (survives closing the browser)" || { echo "FAIL: session cookie expiry is '$EXP' (now $NOW)"; FAIL=1; }
+SIDV=$(awk '$6=="streamvault_admin"{print $7}' "$J2")
+[ -f "$WORK/sessions/sess_$SIDV" ] && echo "PASS: session stored in the app's own directory, not shared /tmp" || { echo "FAIL: session file not in $WORK/sessions"; FAIL=1; }
+check "session directory is private" 700 "$(stat -c %a "$WORK/sessions")"
+# Two days idle: still logged in.
+sed -i -E "s/last_seen\|i:[0-9]+;/last_seen|i:$((NOW - 2*86400));/" "$WORK/sessions/sess_$SIDV"
+check "still logged in after 2 idle days" 200 "$(curl -s -c "$J2" -b "$J2" -o /dev/null -w '%{http_code}' "$B/index.php")"
+# Four days idle: logged out server-side even though the browser still sends the cookie.
+SIDV=$(awk '$6=="streamvault_admin"{print $7}' "$J2")
+sed -i -E "s/last_seen\|i:[0-9]+;/last_seen|i:$((NOW - 4*86400));/" "$WORK/sessions/sess_$SIDV"
+check "logged out after 4 idle days" 302 "$(curl -s -c "$J2" -b "$J2" -o /dev/null -w '%{http_code}' "$B/index.php")"
+
 [ "$FAIL" -eq 0 ] && echo "ALL LOGIN SECURITY E2E CHECKS PASSED" || { echo "SOME CHECKS FAILED"; exit 1; }

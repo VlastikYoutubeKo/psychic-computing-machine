@@ -30,6 +30,9 @@ if (PHP_SAPI !== 'cli' && !headers_sent()) {
     header_remove('X-Powered-By');
 }
 
+// Logged out after this long without any request (3 days).
+const SV_SESSION_LIFETIME = 3 * 86400;
+
 session_name('streamvault_admin');
 ini_set('session.use_strict_mode', '1');
 if (session_status() === PHP_SESSION_NONE) {
@@ -40,7 +43,22 @@ if (session_status() === PHP_SESSION_NONE) {
     // which refuse to send a Secure cookie over HTTP at all.
     $isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
         || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
-    session_set_cookie_params(['httponly' => true, 'samesite' => 'Lax', 'secure' => $isHttps]);
+    // Stay logged in for SV_SESSION_LIFETIME since the last request, across
+    // browser restarts. Two things used to log people out within minutes:
+    // the cookie was a browser-session cookie, and session files lived in
+    // the shared /tmp, where any other PHP site's session GC deletes files
+    // idle for its own (24 min default) lifetime. So: a persistent cookie,
+    // and a private session directory next to the database.
+    $sessionDir = dirname(SV_DB_PATH) . '/sessions';
+    if (!is_dir($sessionDir)) {
+        @mkdir($sessionDir, 0700, true);
+    }
+    if (is_dir($sessionDir) && is_writable($sessionDir)) {
+        ini_set('session.save_path', $sessionDir);
+    }
+    ini_set('session.gc_maxlifetime', (string) SV_SESSION_LIFETIME);
+    $sessionCookie = ['lifetime' => SV_SESSION_LIFETIME, 'path' => '/', 'httponly' => true, 'samesite' => 'Lax', 'secure' => $isHttps];
+    session_set_cookie_params($sessionCookie);
     // PHP's default session cache limiter ("nocache") sends
     // Cache-Control: no-store on every response, including the login POST's
     // response. Chromium (and Brave) silently refuse to offer to save a
@@ -51,4 +69,22 @@ if (session_status() === PHP_SESSION_NONE) {
     session_cache_limiter('');
     session_start();
     header('Cache-Control: private, no-cache, must-revalidate');
+
+    // Idle timeout, enforced server-side (the cookie's own expiry is only a
+    // hint to the browser), and a sliding cookie: re-issued at most hourly
+    // so activity keeps extending it.
+    if (!empty($_SESSION['operator_id'])) {
+        $now = time();
+        if ((int) ($_SESSION['last_seen'] ?? $now) < $now - SV_SESSION_LIFETIME) {
+            $_SESSION = [];
+            session_regenerate_id(true);
+        } else {
+            $_SESSION['last_seen'] = $now;
+            if ((int) ($_SESSION['cookie_at'] ?? 0) < $now - 3600) {
+                $_SESSION['cookie_at'] = $now;
+                unset($sessionCookie['lifetime']);
+                setcookie(session_name(), session_id(), ['expires' => $now + SV_SESSION_LIFETIME] + $sessionCookie);
+            }
+        }
+    }
 }
