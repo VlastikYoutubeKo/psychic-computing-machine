@@ -38,6 +38,7 @@ import (
 type Handler struct {
 	Store     *store.Store
 	Key       []byte // may be nil if no source ever needs credentials
+	relayOnly bool   // relay node: every remux slot may hold an always-on relay
 	Codec     *blobcodec.Codec
 	Transport *http.Transport
 	Remux     *remux.Manager
@@ -78,7 +79,8 @@ func NewRelayOnly(key []byte, relays RelayStore) *Handler {
 	return &Handler{
 		Key:              key,
 		Transport:        newSourceTransport(),
-		Remux:            remux.NewManager(),
+		Remux:            remux.NewRelayNodeManager(),
+		relayOnly:        true,
 		Resolve:          hostResolvesToPrivate,
 		Relays:           relays,
 		lastTouch:        make(map[int64]time.Time),

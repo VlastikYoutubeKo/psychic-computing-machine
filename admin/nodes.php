@@ -107,6 +107,7 @@ require __DIR__ . '/includes/layout_top.php';
 </div>
 <?php endif; ?>
 
+<?php $gatewayBuild = (string) ($db->query("SELECT value FROM settings WHERE key = 'gateway_binary_sha256'")->fetchColumn() ?: ''); ?>
 <div class="sv-panel">
   <h2>Add a node</h2>
   <form method="post">
@@ -129,7 +130,12 @@ require __DIR__ . '/includes/layout_top.php';
       $state = $n['status'] === 'disabled' ? 'disabled' : ($online ? 'online' : ($n['status'] === 'pending' ? 'waiting for first contact' : 'offline'));
       $badge = $online ? 'active' : ($n['status'] === 'disabled' ? 'revoked' : 'private'); ?>
       <tr>
-        <td><strong><?= h($n['name']) ?></strong><div class="mono sv-help"><?= h($n['public_url']) ?></div><?php if (!empty($st['version'])): ?><div class="sv-help">v<?= h((string) $st['version']) ?></div><?php endif; ?></td>
+        <td><strong><?= h($n['name']) ?></strong><div class="mono sv-help"><?= h($n['public_url']) ?></div><?php if (!empty($st['version'])): ?><div class="sv-help">v<?= h((string) $st['version']) ?><?php if (!empty($st['binary_sha256'])): ?> · build <span class="mono"><?= h(substr((string) $st['binary_sha256'], 0, 8)) ?></span><?php endif; ?></div><?php endif; ?>
+          <?php if ($gatewayBuild !== '' && $online): ?>
+            <?php if (($st['binary_sha256'] ?? '') === $gatewayBuild): ?><span class="badge active">up to date</span>
+            <?php elseif (!empty($st['binary_sha256'])): ?><span class="badge private">updating</span><div class="sv-help">picks up this server's build within ~5 minutes</div>
+            <?php else: ?><span class="badge revoked">no auto-update</span><div class="sv-help">run the install command on the node once more</div><?php endif; ?>
+          <?php endif; ?></td>
         <td><span class="badge <?= h($badge) ?>"><?= h($state) ?></span><?php if ($seen): ?><div class="sv-help">last seen <?= h($n['last_seen_at']) ?></div><?php endif; ?></td>
         <td><?php if ($st): ?>load <?= h(number_format((float) ($st['load1'] ?? 0), 2)) ?> / <?= (int) ($st['cpus'] ?? 0) ?> CPU<br>
           <?php $tot = (int) ($st['mem_total_kb'] ?? 0); $av = (int) ($st['mem_available_kb'] ?? 0); if ($tot > 0): ?>RAM <?= h(sv_fmt_bytes(($tot - $av) * 1024)) ?> / <?= h(sv_fmt_bytes($tot * 1024)) ?><?php endif; ?><?php else: ?><span class="sv-help">—</span><?php endif; ?></td>

@@ -18,6 +18,7 @@ import (
 
 	"streamvault/gateway/internal/gatewayhttp"
 	"streamvault/gateway/internal/node"
+	"streamvault/gateway/internal/nodeproto"
 	"streamvault/gateway/internal/secretbox"
 	"streamvault/gateway/internal/store"
 )
@@ -29,8 +30,9 @@ func getenv(key, def string) string {
 	return def
 }
 
-// version is reported by nodes in their heartbeat.
-const version = "2026.09.27"
+// version is reported by nodes in their heartbeat. It is only a label: what
+// decides whether a node is up to date is the binary hash (see below).
+const version = "2026.10.01"
 
 func main() {
 	if os.Getenv("STREAMVAULT_MODE") == "node" {
@@ -65,7 +67,14 @@ func main() {
 		Handler:           h,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	log.Printf("streamvault-gateway listening on %s (db=%s)", listen, dbPath)
+	// Publish this build's hash so the admin can tell which nodes already
+	// run it (nodes report theirs in the heartbeat and auto-update to this).
+	if sum, err := nodeproto.ExecutableSHA256(); err == nil {
+		if err := st.SetSetting("gateway_binary_sha256", sum); err != nil {
+			log.Printf("recording gateway build hash: %v", err)
+		}
+	}
+	log.Printf("streamvault-gateway %s listening on %s (db=%s, remux slots=%d)", version, listen, dbPath, h.Remux.Slots())
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	// Always-on relays (streams flagged always_on in the admin).

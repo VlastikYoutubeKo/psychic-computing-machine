@@ -21,16 +21,20 @@ import (
 
 const (
 	defaultSlots = 2
-	idleTime     = 90 * time.Second
+	maxSlots     = 32
+	// A relay node does nothing but relay, so it gets a generous default
+	// (remux is -c copy: cheap on CPU, a few tens of MB of RAM per stream).
+	defaultRelayNodeSlots = 16
+	idleTime              = 90 * time.Second
 )
 
-// slotsFromEnv: STREAMVAULT_REMUX_SLOTS (1..16), default 2. Always-on relays
+// slotsFromEnv: STREAMVAULT_REMUX_SLOTS (1..32), otherwise def. Always-on relays
 // hold slots permanently, so a host that runs them may want more.
-func slotsFromEnv() int {
-	if n, err := strconv.Atoi(os.Getenv("STREAMVAULT_REMUX_SLOTS")); err == nil && n >= 1 && n <= 16 {
+func slotsFromEnv(def int) int {
+	if n, err := strconv.Atoi(os.Getenv("STREAMVAULT_REMUX_SLOTS")); err == nil && n >= 1 && n <= maxSlots {
 		return n
 	}
-	return defaultSlots
+	return def
 }
 
 var segmentName = regexp.MustCompile(`^seg[0-9]{6}\.ts$`)
@@ -126,8 +130,13 @@ func (m *Manager) Stop(streamID int64) {
 	}
 }
 
-func NewManager() *Manager {
-	m := &Manager{sessions: make(map[int64]*Session), byID: make(map[string]*Session), pending: make(map[int64]map[*pendingOpen]struct{}), closed: make(chan struct{}), slots: make(chan struct{}, slotsFromEnv())}
+func NewManager() *Manager { return newManager(slotsFromEnv(defaultSlots)) }
+
+// NewRelayNodeManager is NewManager with the relay-node default slot count.
+func NewRelayNodeManager() *Manager { return newManager(slotsFromEnv(defaultRelayNodeSlots)) }
+
+func newManager(slots int) *Manager {
+	m := &Manager{sessions: make(map[int64]*Session), byID: make(map[string]*Session), pending: make(map[int64]map[*pendingOpen]struct{}), closed: make(chan struct{}), slots: make(chan struct{}, slots)}
 	go func() {
 		tick := time.NewTicker(30 * time.Second)
 		defer tick.Stop()

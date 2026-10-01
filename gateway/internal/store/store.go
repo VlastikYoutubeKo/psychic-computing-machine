@@ -251,6 +251,12 @@ func (s *Store) AlwaysOnStreams() ([]Stream, error) {
 	return out, rows.Err()
 }
 
+// SetSetting upserts one row of the settings table.
+func (s *Store) SetSetting(key, value string) error {
+	_, err := s.db.Exec(`INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
+	return err
+}
+
 // SetRuntime records the always-on relay state shown in the admin.
 func (s *Store) SetRuntime(streamID int64, state, detail string) error {
 	_, err := s.db.Exec(`INSERT INTO stream_runtime (stream_id, state, detail, updated_at)

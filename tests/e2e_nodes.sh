@@ -87,6 +87,9 @@ for i in $(seq 1 40); do [ "$(q "SELECT status FROM nodes WHERE id=$NODE_ID")" =
 check "node heartbeat marks it active (downloaded binary in node mode)" active "$(q "SELECT status FROM nodes WHERE id=$NODE_ID")"
 grep -q "\"binary_sha256\":\"$(sha256sum "$WORK/gw" | cut -d' ' -f1)\"" <<< "$(q "SELECT last_status_json FROM nodes WHERE id=$NODE_ID")" && ok "heartbeat reports the node binary hash" || bad "heartbeat lacks binary hash"
 get admin nodes.php >/dev/null; grep -q ">online<" "$WORK/last.html" && ok "admin shows node online" || bad "admin does not show node online"
+grep -q ">up to date<" "$WORK/last.html" && ok "admin shows the node runs this server's build" || bad "no 'up to date' badge for a node on the same build"
+q "UPDATE settings SET value='deadbeef' WHERE key='gateway_binary_sha256'"
+get admin nodes.php >/dev/null; grep -q ">updating<" "$WORK/last.html" && ok "admin shows a node on another build as updating" || bad "no 'updating' badge"
 # Always-on state of a node-assigned stream comes from the node heartbeat, not stream_runtime.
 q "UPDATE streams SET always_on=1 WHERE id=$SID"
 q "UPDATE nodes SET last_status_json='{\"streams\":[{\"id\":$SID,\"state\":\"backoff\",\"detail\":\"probe-detail\"}]}' WHERE id=$NODE_ID"

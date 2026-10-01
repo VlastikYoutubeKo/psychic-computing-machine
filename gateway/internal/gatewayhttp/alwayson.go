@@ -88,8 +88,12 @@ func (h *Handler) reconcileAlwaysOn(ctx context.Context, states map[int64]*alway
 		log.Printf("always-on: loading streams: %v", err)
 		return
 	}
-	// Leave at least one slot for on-demand remux viewers.
+	// Leave at least one slot for on-demand remux viewers. A relay node has
+	// no on-demand viewers of its own, so it may use every slot.
 	maxRelays := h.Remux.Slots() - 1
+	if h.relayOnly {
+		maxRelays = h.Remux.Slots()
+	}
 	if maxRelays < 1 {
 		maxRelays = 1
 	}
