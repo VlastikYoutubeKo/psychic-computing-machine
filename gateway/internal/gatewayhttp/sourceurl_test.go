@@ -74,7 +74,8 @@ func TestPlaceholderSourceIsFetchedWithCredentialsInPath(t *testing.T) {
 		case "/live/alice/s3cretpw/7.m3u8":
 			io.WriteString(w, "#EXTM3U\n#EXTINF:6.0,\nseg1.ts\n")
 		case "/live/alice/s3cretpw/seg1.ts":
-			w.Write([]byte("segment-bytes"))
+			w.Header().Set("Content-Type", "text/plain") // mislabelled, but binary: must still pass
+			w.Write([]byte("\x47segment-bytes\x00\x01"))
 		default:
 			http.NotFound(w, r)
 		}
@@ -122,12 +123,67 @@ func TestPlaceholderSourceIsFetchedWithCredentialsInPath(t *testing.T) {
 	}
 	segBody, _ := io.ReadAll(segResp.Body)
 	segResp.Body.Close()
-	if string(segBody) != "segment-bytes" {
+	if string(segBody) != "\x47segment-bytes\x00\x01" {
 		t.Fatalf("segment: HTTP %d %q", segResp.StatusCode, segBody)
 	}
 	mu.Lock()
 	defer mu.Unlock()
 	if sawAuthHeader {
 		t.Fatal("placeholder sources must not also receive Basic auth")
+	}
+}
+
+// A panel that answers 200 with a diagnostic page echoing the requested
+// path (which contains the credentials) must not reach the viewer.
+func TestPlaceholderSourceErrorPageIsNotForwarded(t *testing.T) {
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/8.m3u8"):
+			io.WriteString(w, "#EXTM3U\n#EXTINF:6.0,\nseg1.ts\n")
+		default:
+			io.WriteString(w, "<html>not allowed: "+r.URL.Path+"</html>")
+		}
+	}))
+	defer source.Close()
+
+	h, db := newTestHandler(t)
+	h.Key = bytes.Repeat([]byte{3}, 32)
+	enc, err := secretbox.Encrypt(h.Key, []byte("s3cretpw"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedStream(t, db, source.URL+"/live/{username}/{password}/7.ts", "live/doc", "public")
+	seedStream(t, db, source.URL+"/live/{username}/{password}/8.m3u8", "live/seg", "public")
+	if _, err := db.Exec(`UPDATE streams SET source_username='alice', source_password_enc=?`, enc); err != nil {
+		t.Fatal(err)
+	}
+	gw := httptest.NewServer(h)
+	defer gw.Close()
+
+	get := func(path string) (int, string) {
+		resp, err := http.Get(gw.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(b)
+	}
+	if _, body := get("/live/doc.m3u8"); strings.Contains(body, "s3cretpw") || strings.Contains(body, "not allowed") {
+		t.Fatalf("entry error page forwarded to the viewer: %q", body)
+	}
+	_, manifest := get("/live/seg.m3u8")
+	var seg string
+	for _, line := range strings.Split(manifest, "\n") {
+		if strings.Contains(line, "/r/") {
+			seg = strings.TrimSpace(line)
+		}
+	}
+	if seg == "" {
+		t.Fatalf("no segment reference:\n%s", manifest)
+	}
+	if _, body := get(seg); strings.Contains(body, "s3cretpw") || strings.Contains(body, "not allowed") {
+		t.Fatalf("resource error page forwarded to the viewer: %q", body)
 	}
 }

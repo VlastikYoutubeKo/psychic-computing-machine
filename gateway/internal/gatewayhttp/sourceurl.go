@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"unicode/utf8"
 
 	"streamvault/gateway/internal/secretbox"
 	"streamvault/gateway/internal/store"
@@ -75,4 +76,28 @@ func redactURLError(err error) error {
 		}
 	}
 	return err
+}
+
+// looksLikeDocument reports whether a response is a human-readable page
+// (HTML, plain text, JSON, XML) rather than media. The body has to actually
+// be text: some servers label binary segments text/plain, and those must
+// keep working. WebVTT subtitles (text/vtt) stay allowed.
+func looksLikeDocument(contentType string, head []byte) bool {
+	if len(head) == 0 || !utf8.Valid(head) {
+		return false
+	}
+	for _, b := range head {
+		if b < 0x20 && b != '\t' && b != '\n' && b != '\r' {
+			return false // control bytes: binary data
+		}
+	}
+	ct := strings.ToLower(strings.TrimSpace(strings.SplitN(contentType, ";", 2)[0]))
+	if ct == "text/vtt" || strings.HasPrefix(strings.TrimSpace(string(head)), "WEBVTT") {
+		return false
+	}
+	if strings.HasPrefix(ct, "text/") || strings.HasSuffix(ct, "json") || strings.HasSuffix(ct, "xml") {
+		return true
+	}
+	trimmed := strings.ToLower(strings.TrimSpace(string(head)))
+	return strings.HasPrefix(trimmed, "<!doctype") || strings.HasPrefix(trimmed, "<html")
 }

@@ -17,13 +17,20 @@ const SV_XTREAM_SESSION_TTL = 1800;
 // The connection is remembered in the session (password encrypted with the
 // app key) so choosing channels doesn't need the password sent back and forth.
 $conn = $_SESSION['sv_xtream'] ?? null;
-if (!is_array($conn) || (int) ($conn['at'] ?? 0) < time() - SV_XTREAM_SESSION_TTL) {
+// It belongs to the operator who made it: a different account logging in
+// within the same browser session must not inherit provider credentials.
+if (!is_array($conn) || (int) ($conn['at'] ?? 0) < time() - SV_XTREAM_SESSION_TTL
+    || (int) ($conn['operator_id'] ?? 0) !== (int) $operator['id']) {
     $conn = null;
     unset($_SESSION['sv_xtream']);
 }
 
+// The gateway only plays MPEG-TS sources for accounts allowed to remux;
+// everyone else can use the panel's HLS output.
+$canTs = $isAdmin || !empty($operator['allow_remux']);
+
 $errors = [];
-$form = ['server' => '', 'username' => '', 'format' => 'ts'];
+$form = ['server' => '', 'username' => '', 'format' => $canTs ? 'ts' : 'm3u8'];
 $account = null;
 $channels = null;
 
@@ -43,7 +50,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($action === 'connect') {
         $form['server'] = trim((string) ($_POST['server'] ?? ''));
         $form['username'] = trim((string) ($_POST['username'] ?? ''));
-        $form['format'] = ($_POST['format'] ?? 'ts') === 'm3u8' ? 'm3u8' : 'ts';
+        $form['format'] = ($_POST['format'] ?? '') === 'ts' && $canTs ? 'ts' : 'm3u8';
         $password = (string) ($_POST['password'] ?? '');
         $base = sv_xtream_base($form['server']);
         if ($base === null) {
@@ -61,6 +68,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'password_enc' => sv_encrypt(sv_ensure_key_file(SV_KEY_FILE), $password),
                     'format' => $form['format'],
                     'account' => $account,
+                    'operator_id' => (int) $operator['id'],
                     'at' => time(),
                 ];
                 $_SESSION['sv_xtream'] = $conn;
@@ -88,6 +96,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!$errors && !$isAdmin && ($srcErr = sv_public_source_error($conn['base'])) !== null) {
             $errors[] = $srcErr;
         }
+        if (!$errors && $conn['format'] === 'ts' && !$canTs) {
+            $errors[] = 'Your account cannot play MPEG-TS sources. Connect again and choose HLS.';
+        }
         if (!$errors) {
             try {
                 $password = $connPassword($conn);
@@ -95,7 +106,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $all = sv_xtream_channels($conn['base'], $conn['username'], $password, $isAdmin);
                 $key = sv_ensure_key_file(SV_KEY_FILE);
                 $sourceType = $conn['format'] === 'm3u8' ? 'hls' : 'mpegts';
-                $exists = $db->prepare('SELECT 1 FROM streams WHERE source_url = ? AND owner_id IS ?');
+                // A channel is "already added" only for the same panel account;
+                // importing it again refreshes the stored password (rotated line).
+                $exists = $db->prepare('SELECT id FROM streams WHERE source_url = ? AND owner_id IS ? AND source_username IS ?');
+                $refresh = $db->prepare('UPDATE streams SET source_password_enc = ? WHERE id = ?');
                 $count = $db->prepare('SELECT COUNT(*) FROM streams WHERE owner_id = ?');
                 $insert = $db->prepare('INSERT INTO streams (name, description, source_type, source_url, source_username,
                     source_password_enc, rotation_mode, replacement_reason, owner_id) VALUES (?,?,?,?,?,?,?,?,?)');
@@ -107,8 +121,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         continue;
                     }
                     $url = sv_xtream_source_url($conn['base'], $sid, $conn['format']);
-                    $exists->execute([$url, $operator['id']]);
-                    if ($exists->fetchColumn()) {
+                    $exists->execute([$url, $operator['id'], $conn['username']]);
+                    $existingIds = $exists->fetchAll(PDO::FETCH_COLUMN);
+                    if ($existingIds) {
+                        foreach ($existingIds as $eid) {
+                            $refresh->execute([sv_encrypt($key, $password), (int) $eid]);
+                        }
                         $skipped++;
                         continue;
                     }
@@ -132,7 +150,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
                 sv_audit('xtream_imported', null, ['server' => $conn['base'], 'created' => $created, 'skipped' => $skipped]);
                 $msg = "Imported $created stream" . ($created === 1 ? '' : 's') . '.';
-                if ($skipped) $msg .= " $skipped already existed.";
+                if ($skipped) $msg .= " $skipped already existed (password refreshed).";
                 if ($unknown) $msg .= " $unknown no longer offered by the server.";
                 if ($limitHit) $msg .= ' Stopped: your stream limit is reached.';
                 if ($created) $msg .= ' Add an access point to each stream you want to share.';
@@ -157,8 +175,8 @@ if ($conn && $channels === null) {
 
 $existing = [];
 if ($conn) {
-    $st = $db->prepare('SELECT source_url FROM streams WHERE owner_id IS ? AND source_url LIKE ?');
-    $st->execute([$operator['id'], $conn['base'] . '/live/{username}/{password}/%']);
+    $st = $db->prepare('SELECT source_url FROM streams WHERE owner_id IS ? AND source_username IS ? AND source_url LIKE ?');
+    $st->execute([$operator['id'], $conn['username'], $conn['base'] . '/live/{username}/{password}/%']);
     $existing = array_flip($st->fetchAll(PDO::FETCH_COLUMN));
 }
 
@@ -188,9 +206,10 @@ require __DIR__ . '/includes/layout_top.php';
 
     <label for="xt-format">Stream format</label>
     <select id="xt-format" name="format">
-      <option value="ts" <?= $form['format'] === 'ts' ? 'selected' : '' ?>>MPEG-TS (.ts) – works with every Xtream server</option>
+      <?php if ($canTs): ?><option value="ts" <?= $form['format'] === 'ts' ? 'selected' : '' ?>>MPEG-TS (.ts) – works with every Xtream server</option><?php endif; ?>
       <option value="m3u8" <?= $form['format'] === 'm3u8' ? 'selected' : '' ?>>HLS (.m3u8) – only if the server offers it</option>
     </select>
+    <?php if (!$canTs): ?><div class="sv-help">MPEG-TS sources need the remux permission, which your account does not have. Ask the administrator if the server has no HLS output.</div><?php endif; ?>
 
     <button type="submit" class="btn-primary" style="margin-top:1.5rem;">Connect and list channels</button>
   </form>

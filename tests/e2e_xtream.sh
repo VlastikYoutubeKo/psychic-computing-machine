@@ -102,8 +102,10 @@ check "username stored" "$XUSER" "$(q "SELECT source_username FROM streams WHERE
 check "category kept in description" "Xtream Codes · Kids <b>" "$(q "SELECT description FROM streams WHERE name='Beta Kids'")"
 sqlite3 "$STREAMVAULT_DB" .dump | grep -qF "$XPASS" && bad "plaintext password in the database" || ok "no plaintext password in the database"
 check "each stream has an encrypted password" 2 "$(q "SELECT COUNT(*) FROM streams WHERE length(source_password_enc) > 20")"
+OLDENC=$(q "SELECT source_password_enc FROM streams WHERE name='Alpha News'")
 post admin xtream_import.php action=import 'ids[]=101' >/dev/null
 check "re-import skips existing streams" 2 "$(q "SELECT COUNT(*) FROM streams")"
+[ "$OLDENC" != "$(q "SELECT source_password_enc FROM streams WHERE name='Alpha News'")" ] && ok "re-import refreshes the stored password" || bad "re-import did not refresh the password"
 get admin xtream_import.php >/dev/null; grep -q "already added" "$WORK/last.html" && ok "imported channels are marked" || bad "imported channels not marked"
 SID=$(q "SELECT id FROM streams WHERE name='Beta Kids'")
 get admin "stream_view.php?id=$SID" >/dev/null
@@ -139,6 +141,18 @@ check "no request was sent for the IPv4-mapped literal" 0 "$(wc -l < "$WORK/pane
 check "bob has no session connection (import refused)" 302 "$(post bob xtream_import.php action=import 'ids[]=103')"
 check "bob created nothing" 0 "$(q "SELECT COUNT(*) FROM streams WHERE owner_id=(SELECT id FROM operators WHERE username='bob')")"
 check "bob cannot see admin's imported stream" 404 "$(get bob "stream_view.php?id=$SID")"
+
+# The remembered connection belongs to the operator who made it: another
+# account logging in within the same browser session must not inherit it.
+q "UPDATE operators SET status='disabled' WHERE username='admin'"
+get admin index.php >/dev/null   # admin's session loses operator_id but keeps the rest
+q "UPDATE operators SET status='active' WHERE username='admin'"
+curl -s -c "$(jar admin)" -b "$(jar admin)" -o /dev/null --data-urlencode "csrf=$(csrf admin login.php)" --data-urlencode username=bob --data-urlencode password=bob-password-123 "$A/login.php"
+get admin xtream_import.php >/dev/null
+grep -q 'name="password"' "$WORK/last.html" && ! grep -q "Alpha News" "$WORK/last.html" && ok "another operator in the same session does not inherit the connection" || bad "Xtream connection leaked to another operator"
+check "bob (no remux) is not offered MPEG-TS" 0 "$(grep -c 'value="ts"' "$WORK/last.html")"
+login admin admin-password-123 >/dev/null
+post admin xtream_import.php action=connect "server=$X" "username=$XUSER" "password=$XPASS" format=m3u8 >/dev/null
 
 post admin xtream_import.php action=disconnect >/dev/null
 get admin xtream_import.php >/dev/null; grep -q 'name="password"' "$WORK/last.html" && ok "disconnect returns to the connect form" || bad "disconnect did not clear the connection"

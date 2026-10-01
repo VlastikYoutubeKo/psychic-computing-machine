@@ -551,13 +551,25 @@ func (h *Handler) sniffAndServe(w http.ResponseWriter, r *http.Request, resp *ht
 		}
 		rewritten, err := hls.RewritePlaylist(string(full), manifestURL, h.encodeRef(prefix, ap.ID))
 		if err != nil {
-			log.Printf("rewriting playlist for access point %d: %v", ap.ID, err)
+			// Not %v: a URL parse error quotes the child URI, which can
+			// contain source credentials (placeholder sources) or a secret path.
+			log.Printf("rewriting playlist for access point %d failed: unparsable URI in the source playlist", ap.ID)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return false
 		}
 		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 		w.Header().Set("Cache-Control", "no-store")
 		_, _ = w.Write([]byte(rewritten))
+		return false
+	}
+
+	// A source whose URL carries the credentials (placeholders) may answer
+	// with an error or diagnostic page that echoes the requested path. Never
+	// forward that: an entry response must be a stream, and a resource must
+	// not be a human-readable document.
+	if usesCredentialPlaceholders(ap.Stream.SourceURL) && (entry || looksLikeDocument(resp.Header.Get("Content-Type"), head)) {
+		log.Printf("source for stream %d returned an unexpected document instead of media", ap.Stream.ID)
+		h.writeTemporaryFailure(w, r)
 		return false
 	}
 
