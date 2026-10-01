@@ -42,13 +42,14 @@ class H(BaseHTTPRequestHandler):
             if action is None:
                 return self.send(200, json.dumps({"user_info": {"auth": 1, "status": "Active", "exp_date": "1893456000", "max_connections": "2", "active_cons": "0"}, "server_info": {}}))
             if action == "get_live_categories":
-                return self.send(200, json.dumps([{"category_id": "1", "category_name": "News"}, {"category_id": "2", "category_name": "Kids <b>"}]))
+                return self.send(200, json.dumps([{"category_id": "1", "category_name": "News"}, {"category_id": "2", "category_name": "Kids <b>"}, {"category_id": "3", "category_name": "Bulk"}]))
             if action == "get_live_streams":
                 return self.send(200, json.dumps([
                     {"stream_id": 101, "name": "Alpha News", "category_id": "1"},
                     {"stream_id": 102, "name": "Beta Kids", "category_id": "2"},
                     {"stream_id": 103, "name": "<script>alert(1)</script>", "category_id": "1"},
-                    {"stream_id": "bogus", "name": "ignored"}]))
+                    {"stream_id": "bogus", "name": "ignored"}]
+                    + [{"stream_id": 1000 + i, "name": "Bulk %03d" % i, "category_id": "3"} for i in range(250)]))
             return self.send(200, "[]")
         path = urllib.parse.unquote(self.path)
         if path == LIVE + "102.m3u8":
@@ -85,8 +86,27 @@ grep -q "Enter the server address" "$WORK/last.html" && ok "non-http server addr
 
 check "connect redirects to the channel list" 302 "$(post admin xtream_import.php action=connect "server=$X/get.php?x=1" "username=$XUSER" "password=$XPASS" format=m3u8)"
 check "channel list loads" 200 "$(get admin xtream_import.php)"
-grep -q "Alpha News" "$WORK/last.html" && grep -q "Beta Kids" "$WORK/last.html" && ok "channels listed" || bad "channels missing"
 grep -q "2 allowed" "$WORK/last.html" && ok "connection limit shown" || bad "connection limit missing"
+# Paging: 253 channels, but the browser only ever gets one page of rows.
+check "first page has 100 rows, not the whole list" 100 "$(grep -c 'name="ids\[\]"' "$WORK/last.html")"
+grep -q "Showing 1–100 of 253" "$WORK/last.html" && grep -q "Page 1 of 3" "$WORK/last.html" && ok "page position shown" || bad "page position missing"
+get admin "xtream_import.php?page=3" >/dev/null
+check "last page has the remaining 53 rows" 53 "$(grep -c 'name="ids\[\]"' "$WORK/last.html")"
+check "page beyond the end redirects to the last page" 302 "$(get admin "xtream_import.php?page=99")"
+get admin "xtream_import.php?cat=Bulk&page=2" >/dev/null
+grep -q "Bulk 100" "$WORK/last.html" && ! grep -q "Bulk 099<" "$WORK/last.html" && grep -q "Showing 101–200 of 250" "$WORK/last.html" && ok "category filter and page 2" || bad "category filter/page 2 wrong"
+get admin "xtream_import.php?q=bulk+24" >/dev/null
+check "server-side search (case-insensitive)" 10 "$(grep -c 'name="ids\[\]"' "$WORK/last.html")"
+get admin "xtream_import.php?q=nothing-like-this" >/dev/null
+grep -q "No channels match" "$WORK/last.html" && ok "empty search result" || bad "empty search result not reported"
+check "channel list fetched from the panel once, then cached" 1 "$(grep -c 'action=get_live_streams' "$WORK/panel.log")"
+post admin xtream_import.php action=refresh >/dev/null
+check "reload button re-fetches the list" 2 "$(grep -c 'action=get_live_streams' "$WORK/panel.log")"
+check "cache file is private" 600 "$(stat -c %a "$WORK"/xtream-cache/*.json)"
+grep -rqF "$XPASS" "$WORK/xtream-cache" && bad "password in the channel cache" || ok "channel cache holds no password"
+get admin "xtream_import.php?q=a" >/dev/null
+grep -q "Alpha News" "$WORK/last.html" && grep -q "Beta Kids" "$WORK/last.html" && ok "channels listed" || bad "channels missing"
+get admin "xtream_import.php?q=script" >/dev/null
 grep -q "<script>alert(1)</script>" "$WORK/last.html" && bad "panel-supplied name rendered unescaped (XSS)" || ok "panel-supplied names are escaped"
 grep -q "&lt;script&gt;alert(1)&lt;/script&gt;" "$WORK/last.html" && ok "escaped name is present" || bad "escaped name missing"
 grep -qF "$XPASS" "$WORK/last.html" || grep -q "p@ss" "$WORK/last.html" && bad "password appears in the page" || ok "password never rendered"
@@ -94,7 +114,8 @@ grep -qF "$XPASS" "$WORK/last.html" || grep -q "p@ss" "$WORK/last.html" && bad "
 # --- import ----------------------------------------------------------------
 post admin xtream_import.php action=import >/dev/null
 grep -q "Select at least one channel" "$WORK/last.html" && ok "empty selection rejected" || bad "empty selection accepted"
-check "import redirects to streams" 302 "$(post admin xtream_import.php action=import 'ids[]=101' 'ids[]=102' 'ids[]=999')"
+check "import returns to the channel list" 302 "$(post admin xtream_import.php action=import 'ids[]=101' 'ids[]=102' 'ids[]=999' q=a)"
+get admin "xtream_import.php?q=a" >/dev/null; grep -q "Imported 2 streams" "$WORK/last.html" && ok "import result shown on the list" || bad "import result not shown"
 check "two streams created (unknown id ignored)" 2 "$(q "SELECT COUNT(*) FROM streams")"
 check "stored URL keeps placeholders" "$X/live/{username}/{password}/102.m3u8" "$(q "SELECT source_url FROM streams WHERE name='Beta Kids'")"
 check "source type follows the format" hls "$(q "SELECT source_type FROM streams WHERE name='Beta Kids'")"
@@ -106,7 +127,7 @@ OLDENC=$(q "SELECT source_password_enc FROM streams WHERE name='Alpha News'")
 post admin xtream_import.php action=import 'ids[]=101' >/dev/null
 check "re-import skips existing streams" 2 "$(q "SELECT COUNT(*) FROM streams")"
 [ "$OLDENC" != "$(q "SELECT source_password_enc FROM streams WHERE name='Alpha News'")" ] && ok "re-import refreshes the stored password" || bad "re-import did not refresh the password"
-get admin xtream_import.php >/dev/null; grep -q "already added" "$WORK/last.html" && ok "imported channels are marked" || bad "imported channels not marked"
+get admin "xtream_import.php?q=alpha" >/dev/null; grep -q "already added" "$WORK/last.html" && ok "imported channels are marked" || bad "imported channels not marked"
 SID=$(q "SELECT id FROM streams WHERE name='Beta Kids'")
 get admin "stream_view.php?id=$SID" >/dev/null
 grep -q "{username}/{password}/102.m3u8" "$WORK/last.html" && ! grep -q "p@ss" "$WORK/last.html" && ok "stream page shows placeholders, not the password" || bad "stream page leaks or lacks the source URL"
@@ -149,12 +170,14 @@ get admin index.php >/dev/null   # admin's session loses operator_id but keeps t
 q "UPDATE operators SET status='active' WHERE username='admin'"
 curl -s -c "$(jar admin)" -b "$(jar admin)" -o /dev/null --data-urlencode "csrf=$(csrf admin login.php)" --data-urlencode username=bob --data-urlencode password=bob-password-123 "$A/login.php"
 get admin xtream_import.php >/dev/null
-grep -q 'name="password"' "$WORK/last.html" && ! grep -q "Alpha News" "$WORK/last.html" && ok "another operator in the same session does not inherit the connection" || bad "Xtream connection leaked to another operator"
+grep -q 'name="password"' "$WORK/last.html" && ! grep -q "Bulk 0" "$WORK/last.html" && ok "another operator in the same session does not inherit the connection" || bad "Xtream connection leaked to another operator"
 check "bob (no remux) is not offered MPEG-TS" 0 "$(grep -c 'value="ts"' "$WORK/last.html")"
-login admin admin-password-123 >/dev/null
-post admin xtream_import.php action=connect "server=$X" "username=$XUSER" "password=$XPASS" format=m3u8 >/dev/null
+post admin logout.php >/dev/null   # this jar is bob's session now
+check "admin logs back in" 302 "$(login admin admin-password-123)"
+check "admin reconnects" 302 "$(post admin xtream_import.php action=connect "server=$X" "username=$XUSER" "password=$XPASS" format=m3u8)"
 
 post admin xtream_import.php action=disconnect >/dev/null
+check "disconnect removes the cached channel list" 0 "$(ls "$WORK/xtream-cache" 2>/dev/null | wc -l | tr -d ' ')"
 get admin xtream_import.php >/dev/null; grep -q 'name="password"' "$WORK/last.html" && ok "disconnect returns to the connect form" || bad "disconnect did not clear the connection"
 
 [ "$FAIL" = 0 ] && echo "ALL XTREAM E2E CHECKS PASSED" || { echo "SOME XTREAM E2E CHECKS FAILED"; exit 1; }

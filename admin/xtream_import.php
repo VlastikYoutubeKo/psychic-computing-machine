@@ -10,7 +10,7 @@ $isAdmin = sv_is_admin($operator);
 
 // Importing thousands of channels' worth of JSON takes a while and some memory.
 @set_time_limit(180);
-@ini_set('memory_limit', '512M');
+@ini_set('memory_limit', '768M');
 
 const SV_XTREAM_SESSION_TTL = 1800;
 
@@ -38,13 +38,39 @@ $connPassword = function (array $conn): string {
     return sv_decrypt(sv_ensure_key_file(SV_KEY_FILE), (string) $conn['password_enc']);
 };
 
+// Current view of the channel list: search text, category ('*' = all) and page.
+$view = static function (array $src): array {
+    $q = trim((string) ($src['q'] ?? ''));
+    $cat = array_key_exists('cat', $src) ? (string) $src['cat'] : '*';
+    return ['q' => mb_substr($q, 0, 100, 'UTF-8'), 'cat' => mb_substr($cat, 0, 80, 'UTF-8'), 'page' => max(1, (int) ($src['page'] ?? 1))];
+};
+$viewUrl = static function (array $v): string {
+    $params = [];
+    if ($v['q'] !== '') $params['q'] = $v['q'];
+    if ($v['cat'] !== '*') $params['cat'] = $v['cat'];
+    if ($v['page'] > 1) $params['page'] = $v['page'];
+    return 'xtream_import.php' . ($params ? '?' . http_build_query($params) : '');
+};
+$cur = $view($_GET);
+$forceRefresh = false;
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     sv_csrf_check();
     $action = (string) ($_POST['action'] ?? '');
 
     if ($action === 'disconnect') {
+        if ($conn) {
+            sv_xtream_cache_clear((int) $operator['id'], $conn['base'], $conn['username']);
+        }
         unset($_SESSION['sv_xtream']);
         sv_redirect('xtream_import.php');
+    }
+
+    if ($action === 'refresh' && $conn) {
+        $forceRefresh = true; // re-fetch the channel list from the panel below
+    }
+    if ($action === 'import') {
+        $cur = $view($_POST); // come back to the same search/category/page
     }
 
     if ($action === 'connect') {
@@ -102,8 +128,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!$errors) {
             try {
                 $password = $connPassword($conn);
-                // Names come from the panel again, not from the submitted form.
-                $all = sv_xtream_channels($conn['base'], $conn['username'], $password, $isAdmin);
+                // Names come from the server-side channel list, not from the submitted form.
+                $all = sv_xtream_channels_cached((int) $operator['id'], $conn['base'], $conn['username'], $password, $isAdmin)['channels'];
                 $key = sv_ensure_key_file(SV_KEY_FILE);
                 $sourceType = $conn['format'] === 'm3u8' ? 'hls' : 'mpegts';
                 // A channel is "already added" only for the same panel account;
@@ -153,9 +179,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($skipped) $msg .= " $skipped already existed (password refreshed).";
                 if ($unknown) $msg .= " $unknown no longer offered by the server.";
                 if ($limitHit) $msg .= ' Stopped: your stream limit is reached.';
-                if ($created) $msg .= ' Add an access point to each stream you want to share.';
+                if ($created) $msg .= ' Add an access point to each stream you want to share (Streams page).';
                 sv_flash($created || !$limitHit ? 'ok' : 'err', $msg);
-                sv_redirect('streams.php');
+                sv_redirect($viewUrl($cur));
             } catch (RuntimeException $e) {
                 $errors[] = $e->getMessage();
             }
@@ -163,14 +189,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
+$fetchedAt = null;
+$categories = [];   // name => channel count
+$rows = [];         // the page of channels to render
+$matches = 0;
+$pages = 1;
 if ($conn && $channels === null) {
     $account = $conn['account'] ?? null;
     try {
-        $channels = sv_xtream_channels($conn['base'], $conn['username'], $connPassword($conn), $isAdmin);
+        $list = sv_xtream_channels_cached((int) $operator['id'], $conn['base'], $conn['username'], $connPassword($conn), $isAdmin, $forceRefresh);
+        $channels = $list['channels'];
+        $fetchedAt = $list['fetched_at'];
     } catch (RuntimeException $e) {
         $errors[] = $e->getMessage();
         $channels = [];
     }
+    // Filter and page on the server: the browser gets SV_XTREAM_PAGE_SIZE rows,
+    // never the whole list (56 000 table rows freeze a phone).
+    $needle = mb_strtolower($cur['q'], 'UTF-8');
+    $first = ($cur['page'] - 1) * SV_XTREAM_PAGE_SIZE;
+    foreach ($channels as $sid => $ch) {
+        $categories[$ch['category']] = ($categories[$ch['category']] ?? 0) + 1;
+        if ($cur['cat'] !== '*' && $ch['category'] !== $cur['cat']) {
+            continue;
+        }
+        if ($needle !== '' && mb_stripos($ch['name'], $needle, 0, 'UTF-8') === false) {
+            continue;
+        }
+        if ($matches >= $first && count($rows) < SV_XTREAM_PAGE_SIZE) {
+            $rows[$sid] = $ch;
+        }
+        $matches++;
+    }
+    $pages = max(1, (int) ceil($matches / SV_XTREAM_PAGE_SIZE));
+    if ($cur['page'] > $pages) { // e.g. a stale page number after narrowing the search
+        sv_redirect($viewUrl(['page' => $pages] + $cur));
+    }
+    uksort($categories, fn ($a, $b) => strnatcasecmp((string) $a, (string) $b));
 }
 
 $existing = [];
@@ -231,75 +286,82 @@ require __DIR__ . '/includes/layout_top.php';
     <input type="hidden" name="action" value="disconnect">
     <button type="submit" class="btn">Use a different account</button>
   </form>
+  <form method="post" style="margin-top:.5rem;">
+    <?= sv_csrf_field() ?>
+    <input type="hidden" name="action" value="refresh">
+    <button type="submit" class="btn">Reload channel list from the server</button>
+  </form>
 </div>
 
 <div class="sv-panel">
   <?php if (!$channels): ?>
     <p class="sv-help">The server lists no live channels for this account.</p>
-  <?php else:
-    $cats = array_values(array_unique(array_column($channels, 'category')));
-    sort($cats, SORT_NATURAL | SORT_FLAG_CASE); ?>
+  <?php else: ?>
+  <form method="get" action="xtream_import.php" style="display:flex;gap:.75rem;flex-wrap:wrap;align-items:end;">
+    <div style="flex:2 1 14rem;"><label for="xt-filter">Search</label><input id="xt-filter" type="search" name="q" value="<?= h($cur['q']) ?>" placeholder="Channel name" autocomplete="off"></div>
+    <div style="flex:1 1 12rem;"><label for="xt-cat">Category</label>
+      <select id="xt-cat" name="cat">
+        <option value="*">All categories (<?= count($channels) ?> channels)</option>
+        <?php foreach ($categories as $c => $n): ?><option value="<?= h((string) $c) ?>" <?= $cur['cat'] === (string) $c ? 'selected' : '' ?>><?= h((string) $c === '' ? '(no category)' : (string) $c) ?> (<?= (int) $n ?>)</option><?php endforeach; ?>
+      </select></div>
+    <div><button type="submit" class="btn-primary">Show</button> <?php if ($cur['q'] !== '' || $cur['cat'] !== '*'): ?><a class="btn" href="xtream_import.php">Reset</a><?php endif; ?></div>
+  </form>
+  <p class="sv-help" aria-live="polite">
+    <?php if ($matches === 0): ?>No channels match.<?php else: ?>
+      Showing <?= ($cur['page'] - 1) * SV_XTREAM_PAGE_SIZE + 1 ?>–<?= ($cur['page'] - 1) * SV_XTREAM_PAGE_SIZE + count($rows) ?> of <?= (int) $matches ?> matching channel<?= $matches === 1 ? '' : 's' ?>.
+    <?php endif; ?>
+    <?php if ($fetchedAt): ?>List loaded from the server <?= h(gmdate('H:i', $fetchedAt)) ?> UTC.<?php endif; ?>
+  </p>
+
+  <?php if ($rows): ?>
   <form method="post" id="xt-import">
     <?= sv_csrf_field() ?>
     <input type="hidden" name="action" value="import">
-    <div style="display:flex;gap:.75rem;flex-wrap:wrap;align-items:end;">
-      <div style="flex:2 1 14rem;"><label for="xt-filter">Search</label><input id="xt-filter" type="search" placeholder="Channel name" autocomplete="off"></div>
-      <div style="flex:1 1 12rem;"><label for="xt-cat">Category</label>
-        <select id="xt-cat"><option value="">All categories (<?= count($channels) ?> channels)</option>
-          <?php foreach ($cats as $c): ?><option value="<?= h($c) ?>"><?= h($c === '' ? '(no category)' : $c) ?></option><?php endforeach; ?>
-        </select></div>
-      <div><button type="button" class="btn" id="xt-all">Select shown</button> <button type="button" class="btn" id="xt-none">Clear</button></div>
-    </div>
-    <p class="sv-help" id="xt-count" aria-live="polite"></p>
-    <div style="max-height:60vh;overflow:auto;border:1px solid var(--sv-border, rgba(128,128,128,.3));border-radius:8px;">
-      <table id="xt-table">
-        <tr><th style="width:2.5rem;"></th><th>Channel</th><th>Category</th></tr>
-        <?php foreach ($channels as $sid => $ch):
-            $have = isset($existing[sv_xtream_source_url($conn['base'], (int) $sid, $conn['format'])]); ?>
-          <tr data-name="<?= h(mb_strtolower($ch['name'], 'UTF-8')) ?>" data-cat="<?= h($ch['category']) ?>">
-            <td><input type="checkbox" name="ids[]" value="<?= (int) $sid ?>" id="xt-<?= (int) $sid ?>" <?= $have ? 'disabled' : '' ?>></td>
-            <td><label for="xt-<?= (int) $sid ?>" style="margin:0;font-weight:inherit;"><?= h($ch['name']) ?></label><?= $have ? ' <span class="badge resolved">already added</span>' : '' ?></td>
-            <td><?= h($ch['category']) ?></td>
-          </tr>
-        <?php endforeach; ?>
-      </table>
-    </div>
+    <input type="hidden" name="q" value="<?= h($cur['q']) ?>">
+    <?php if ($cur['cat'] !== '*'): ?><input type="hidden" name="cat" value="<?= h($cur['cat']) ?>"><?php endif; ?>
+    <input type="hidden" name="page" value="<?= (int) $cur['page'] ?>">
+    <p><button type="button" class="btn" id="xt-all">Select all on this page</button> <button type="button" class="btn" id="xt-none">Clear</button> <span class="sv-help" id="xt-count"></span></p>
+    <table id="xt-table">
+      <tr><th style="width:2.5rem;"></th><th>Channel</th><th>Category</th></tr>
+      <?php foreach ($rows as $sid => $ch):
+          $have = isset($existing[sv_xtream_source_url($conn['base'], (int) $sid, $conn['format'])]); ?>
+        <tr>
+          <td><input type="checkbox" name="ids[]" value="<?= (int) $sid ?>" id="xt-<?= (int) $sid ?>" <?= $have ? 'disabled' : '' ?>></td>
+          <td><label for="xt-<?= (int) $sid ?>" style="margin:0;font-weight:inherit;"><?= h($ch['name']) ?></label><?= $have ? ' <span class="badge resolved">already added</span>' : '' ?></td>
+          <td><?= h($ch['category']) ?></td>
+        </tr>
+      <?php endforeach; ?>
+    </table>
     <button type="submit" class="btn-primary" style="margin-top:1rem;" id="xt-submit">Import selected</button>
-    <span class="sv-help">Up to <?= SV_XTREAM_MAX_IMPORT ?> at a time.</span>
+    <span class="sv-help">Imports the channels ticked on this page; search or change page for more.</span>
   </form>
+  <?php if ($pages > 1): ?>
+  <p style="margin-top:1rem;display:flex;gap:.75rem;align-items:center;flex-wrap:wrap;">
+    <?php if ($cur['page'] > 1): ?><a class="btn" href="<?= h($viewUrl(['page' => $cur['page'] - 1] + $cur)) ?>">← Previous</a><?php endif; ?>
+    <span class="sv-help">Page <?= (int) $cur['page'] ?> of <?= (int) $pages ?></span>
+    <?php if ($cur['page'] < $pages): ?><a class="btn" href="<?= h($viewUrl(['page' => $cur['page'] + 1] + $cur)) ?>">Next →</a><?php endif; ?>
+  </p>
+  <?php endif; ?>
   <script>
   (function () {
-    var rows = Array.prototype.slice.call(document.querySelectorAll('#xt-table tr[data-name]'));
-    var filter = document.getElementById('xt-filter'), cat = document.getElementById('xt-cat');
+    var boxes = Array.prototype.slice.call(document.querySelectorAll('#xt-table input[type=checkbox]'));
     var count = document.getElementById('xt-count'), submit = document.getElementById('xt-submit');
-    var max = <?= SV_XTREAM_MAX_IMPORT ?>;
     function update() {
-      var shown = 0, picked = 0;
-      rows.forEach(function (r) { if (!r.hidden) shown++; if (r.querySelector('input').checked) picked++; });
-      count.textContent = shown + ' shown, ' + picked + ' selected' + (picked > max ? ' (too many: at most ' + max + ' at a time)' : '');
-      submit.disabled = picked === 0 || picked > max;
+      var picked = boxes.filter(function (b) { return b.checked; }).length;
+      count.textContent = picked + ' selected';
+      submit.disabled = picked === 0;
     }
-    function apply() {
-      var q = filter.value.trim().toLowerCase(), c = cat.value, any = cat.selectedIndex > 0;
-      rows.forEach(function (r) {
-        r.hidden = (q !== '' && r.dataset.name.indexOf(q) === -1) || (any && r.dataset.cat !== c);
-      });
-      update();
-    }
-    filter.addEventListener('input', apply);
-    cat.addEventListener('change', apply);
     document.getElementById('xt-table').addEventListener('change', update);
     document.getElementById('xt-all').addEventListener('click', function () {
-      rows.forEach(function (r) { var i = r.querySelector('input'); if (!r.hidden && !i.disabled) i.checked = true; });
-      update();
+      boxes.forEach(function (b) { if (!b.disabled) b.checked = true; }); update();
     });
     document.getElementById('xt-none').addEventListener('click', function () {
-      rows.forEach(function (r) { r.querySelector('input').checked = false; });
-      update();
+      boxes.forEach(function (b) { b.checked = false; }); update();
     });
-    apply();
+    update();
   })();
   </script>
+  <?php endif; ?>
   <?php endif; ?>
 </div>
 <?php endif; ?>

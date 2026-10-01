@@ -12,7 +12,9 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/helpers.php';
 
-const SV_XTREAM_MAX_RESPONSE = 48 * 1024 * 1024; // big panels list tens of thousands of channels
+const SV_XTREAM_MAX_RESPONSE = 96 * 1024 * 1024; // big panels list tens of thousands of channels
+const SV_XTREAM_CACHE_TTL = 1800;                 // channel list is re-fetched from the panel after this
+const SV_XTREAM_PAGE_SIZE = 100;                  // rows sent to the browser at once
 const SV_XTREAM_MAX_IMPORT = 500;
 
 /**
@@ -195,4 +197,55 @@ function sv_xtream_text(mixed $value, int $max): string
     $s = mb_scrub($s, 'UTF-8');
     $s = trim((string) preg_replace('/[\x00-\x1F\x7F]+/u', ' ', $s));
     return mb_substr($s, 0, $max, 'UTF-8');
+}
+
+// --- channel list cache -------------------------------------------------------
+// Panels list tens of thousands of channels (tens of MB of JSON). The list is
+// fetched once, reduced to id/name/category and kept in a private file per
+// operator and panel account, so searching and paging don't hit the panel
+// again and the browser only ever receives one page of rows. The file holds
+// no credentials.
+
+function sv_xtream_cache_file(int $operatorId, string $base, string $username): string
+{
+    return dirname(SV_DB_PATH) . '/xtream-cache/' . hash('sha256', $operatorId . "\0" . $base . "\0" . $username) . '.json';
+}
+
+function sv_xtream_cache_clear(int $operatorId, string $base, string $username): void
+{
+    @unlink(sv_xtream_cache_file($operatorId, $base, $username));
+}
+
+/**
+ * Returns ['channels' => [id => ['name', 'category']], 'fetched_at' => unix time].
+ *
+ * @throws RuntimeException
+ */
+function sv_xtream_channels_cached(int $operatorId, string $base, string $username, string $password, bool $allowPrivate, bool $refresh = false): array
+{
+    $file = sv_xtream_cache_file($operatorId, $base, $username);
+    if (!$refresh && is_file($file) && filemtime($file) > time() - SV_XTREAM_CACHE_TTL) {
+        $data = json_decode((string) file_get_contents($file), true);
+        if (is_array($data) && is_array($data['channels'] ?? null)) {
+            return ['channels' => $data['channels'], 'fetched_at' => (int) filemtime($file)];
+        }
+    }
+    $channels = sv_xtream_channels($base, $username, $password, $allowPrivate);
+    $dir = dirname($file);
+    if (!is_dir($dir)) {
+        @mkdir($dir, 0700, true);
+    }
+    if (is_dir($dir) && is_writable($dir)) {
+        foreach (glob($dir . '/*.json') ?: [] as $old) { // drop lists nobody has used for a day
+            if (filemtime($old) < time() - 86400) {
+                @unlink($old);
+            }
+        }
+        $tmp = $file . '.' . bin2hex(random_bytes(4)) . '.tmp';
+        if (@file_put_contents($tmp, json_encode(['channels' => $channels], JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE), LOCK_EX) !== false) {
+            @chmod($tmp, 0600);
+            @rename($tmp, $file);
+        }
+    }
+    return ['channels' => $channels, 'fetched_at' => time()];
 }
