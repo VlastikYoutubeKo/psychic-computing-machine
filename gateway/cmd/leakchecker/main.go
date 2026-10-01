@@ -29,6 +29,14 @@ import (
 // raise it if the stream count grows enough to approach the search limit.
 const defaultScanInterval = 5 * time.Minute
 
+// newGitHubClient waits out GitHub's one-minute search windows instead of
+// abandoning the rest of the scan (the run itself is bounded by its context).
+func newGitHubClient(token string) *leakcheck.Client {
+	c := leakcheck.NewClient(token)
+	c.MaxRateWait = 90 * time.Second
+	return c
+}
+
 func scanInterval() time.Duration {
 	if v := os.Getenv("STREAMVAULT_LEAK_SCAN_INTERVAL"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d >= time.Minute {
@@ -119,7 +127,7 @@ func main() {
 			case baseErr != nil:
 				finishWithError(store, runID, baseErr)
 			default:
-				sum := (&leakcheck.Scanner{Store: store, GitHub: leakcheck.NewClient(token), BaseURL: baseURL}).Run(ctx)
+				sum := (&leakcheck.Scanner{Store: store, GitHub: newGitHubClient(token), BaseURL: baseURL}).Run(ctx)
 				finishRun(store, runID, "global", sum)
 				if requestedValue != "" {
 					if e := store.ClearScanRequestIfUnchanged(requestedValue); e != nil {
@@ -155,7 +163,7 @@ func main() {
 		case baseErr != nil:
 			finishWithError(store, runID, baseErr)
 		default:
-			sum := (&leakcheck.Scanner{Store: store, GitHub: leakcheck.NewClient(account.Token), BaseURL: baseURL, OwnerID: &id}).Run(ctx)
+			sum := (&leakcheck.Scanner{Store: store, GitHub: newGitHubClient(account.Token), BaseURL: baseURL, OwnerID: &id}).Run(ctx)
 			finishRun(store, runID, "user", sum)
 			if account.Requested != "" {
 				if e := store.ClearUserRequestIfUnchanged(id, account.Requested); e != nil {

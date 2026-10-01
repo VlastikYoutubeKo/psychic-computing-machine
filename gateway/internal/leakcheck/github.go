@@ -31,6 +31,17 @@ type Client struct {
 	BaseURL string
 	Token   string
 	HTTP    *http.Client
+
+	// MaxRateWait is the longest the client will sleep for one rate-limit
+	// window to reset before giving up with ErrRateLimited. Zero disables
+	// waiting. GitHub's code search allows only ~10 requests/minute (issue
+	// search ~30), so a scan over more access points than that has to
+	// pause for the window instead of leaving the rest unscanned.
+	MaxRateWait time.Duration
+
+	// limits remembers the last rate-limit headers per endpoint (each
+	// search endpoint has its own bucket).
+	limits map[string]RateLimit
 }
 
 func NewClient(token string) *Client {
@@ -68,7 +79,57 @@ type IssueResult struct {
 
 var ErrRateLimited = fmt.Errorf("leakcheck: GitHub search rate limit exhausted")
 
+// do sends one GET, pacing itself against the endpoint's rate-limit bucket
+// when MaxRateWait is set: it waits out an exhausted window before sending,
+// and retries once if GitHub still answers "rate limited".
 func (c *Client) do(ctx context.Context, path string, accept string) ([]byte, RateLimit, error) {
+	bucket := endpointOnly(path)
+	if prev, ok := c.limits[bucket]; ok && prev.Remaining == 0 {
+		if err := c.waitForReset(ctx, prev); err != nil {
+			return nil, prev, err
+		}
+	}
+	body, rl, err := c.doOnce(ctx, path, accept)
+	if errors.Is(err, ErrRateLimited) && c.MaxRateWait > 0 {
+		if werr := c.waitForReset(ctx, rl); werr != nil {
+			return nil, rl, werr
+		}
+		body, rl, err = c.doOnce(ctx, path, accept)
+	}
+	if c.limits == nil {
+		c.limits = make(map[string]RateLimit)
+	}
+	c.limits[bucket] = rl
+	return body, rl, err
+}
+
+// waitForReset sleeps until rl's window resets. It returns ErrRateLimited
+// when waiting is disabled or the reset is further away than MaxRateWait.
+func (c *Client) waitForReset(ctx context.Context, rl RateLimit) error {
+	if c.MaxRateWait <= 0 {
+		return nil // caller decides (scanner stops the run on Remaining == 0)
+	}
+	wait := 60 * time.Second // GitHub search windows are one minute
+	if !rl.Reset.IsZero() {
+		wait = time.Until(rl.Reset) + time.Second
+	}
+	if wait <= 0 {
+		return nil
+	}
+	if wait > c.MaxRateWait {
+		return ErrRateLimited
+	}
+	t := time.NewTimer(wait)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ErrRateLimited
+	case <-t.C:
+		return nil
+	}
+}
+
+func (c *Client) doOnce(ctx context.Context, path string, accept string) ([]byte, RateLimit, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
 	if err != nil {
 		return nil, RateLimit{}, err
@@ -110,7 +171,7 @@ func (c *Client) do(ctx context.Context, path string, accept string) ([]byte, Ra
 	if err != nil {
 		return nil, rl, err
 	}
-	if resp.StatusCode == http.StatusForbidden && rl.Remaining == 0 {
+	if (resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests) && rl.Remaining == 0 {
 		return nil, rl, ErrRateLimited
 	}
 	if resp.StatusCode >= 400 {

@@ -10,8 +10,11 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -282,5 +285,69 @@ func TestScannerStopsEarlyOnRateLimit(t *testing.T) {
 	sum := scanner.Run(context.Background())
 	if sum.Err == nil {
 		t.Fatal("expected the run to report a rate-limit note, not silently succeed")
+	}
+}
+
+// With MaxRateWait set, an exhausted window is waited out and every access
+// point still gets scanned (GitHub code search allows ~10 requests/minute,
+// fewer than a modest number of access points).
+func TestScannerWaitsOutRateLimitWindow(t *testing.T) {
+	st, db := newTestStore(t)
+	res, err := db.Exec(`INSERT INTO streams (name, source_type, source_url) VALUES ('Nova', 'hls', 'https://source.internal/x.m3u8')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	streamID, _ := res.LastInsertId()
+	for _, p := range []string{"live/a", "live/b", "live/c"} {
+		if _, err := db.Exec(`INSERT INTO access_points (stream_id, public_path, visibility) VALUES (?, ?, 'public')`, streamID, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO settings (key, value) VALUES ('gateway_base_url', 'https://restream.example.com')`); err != nil {
+		t.Fatal(err)
+	}
+
+	var mu sync.Mutex
+	codeCalls, rejected := 0, 0
+	windowEnd := time.Now().Add(2 * time.Second)
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.URL.Path != "/search/code" {
+			w.Header().Set("X-RateLimit-Remaining", "20")
+			w.Write([]byte(`{"items":[]}`))
+			return
+		}
+		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(windowEnd.Unix(), 10))
+		if time.Now().Before(windowEnd) {
+			if codeCalls >= 1 { // the window allowed a single request
+				rejected++
+				w.Header().Set("X-RateLimit-Remaining", "0")
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
+			codeCalls++
+			w.Header().Set("X-RateLimit-Remaining", "0")
+			w.Write([]byte(`{"items":[]}`))
+			return
+		}
+		codeCalls++
+		w.Header().Set("X-RateLimit-Remaining", "9")
+		w.Write([]byte(`{"items":[]}`))
+	}))
+	defer gh.Close()
+
+	client := NewClient("")
+	client.BaseURL = gh.URL
+	client.MaxRateWait = 10 * time.Second
+	sum := (&Scanner{Store: st, GitHub: client, BaseURL: "https://restream.example.com"}).Run(context.Background())
+	if sum.Err != nil {
+		t.Fatalf("expected a complete run, got: %v", sum.Err)
+	}
+	if sum.StreamsChecked != 3 || codeCalls != 3 {
+		t.Fatalf("expected all 3 access points scanned, got checked=%d codeCalls=%d", sum.StreamsChecked, codeCalls)
+	}
+	if rejected != 0 {
+		t.Fatalf("client should wait for the reset instead of hitting the limit, got %d rejected requests", rejected)
 	}
 }

@@ -142,7 +142,7 @@ func (sc *Scanner) searchAndRecord(ctx context.Context, ap AccessPointInfo, quer
 			}
 		}
 	}
-	if codeMeta.RateLimit.Remaining == 0 {
+	if codeMeta.RateLimit.Remaining == 0 && sc.GitHub.MaxRateWait == 0 {
 		return fmt.Errorf("stopped early: GitHub search rate limit exhausted after %d access points", sum.StreamsChecked), queryErrors, incompleteQueries, recordErrors
 	}
 
@@ -172,7 +172,7 @@ func (sc *Scanner) searchAndRecord(ctx context.Context, ap AccessPointInfo, quer
 				recordErrors++
 			}
 		}
-		if issueMeta.RateLimit.Remaining == 0 {
+		if issueMeta.RateLimit.Remaining == 0 && sc.GitHub.MaxRateWait == 0 {
 			return fmt.Errorf("stopped early: GitHub search rate limit exhausted after %d access points", sum.StreamsChecked), queryErrors, incompleteQueries, recordErrors
 		}
 	}
