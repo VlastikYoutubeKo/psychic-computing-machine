@@ -158,7 +158,7 @@ require __DIR__ . '/includes/layout_top.php';
 
     <label>Source URL</label>
     <input type="text" name="source_url" value="<?= h($form['source_url']) ?>" placeholder="https://restream.mxnticek.eu/memfs/xxxxx.m3u8 or http://user:pass@tvheadend:9981/stream/channel/123" required>
-    <div class="sv-help">If the URL contains <code>user:pass@</code>, credentials are extracted automatically and stored encrypted, separately from the URL. They are never shown again after saving.</div>
+    <div class="sv-help">If the URL contains <code>user:pass@</code>, credentials are extracted automatically and stored encrypted, separately from the URL. They are never shown again after saving. For sources that want the credentials inside the URL path (Xtream Codes), write <code>{username}</code> and <code>{password}</code> in the URL and fill in the fields below, or use <a href="xtream_import.php">Import from Xtream Codes</a>.</div>
 
     <label>Source username (optional, overrides URL)</label>
     <input type="text" name="source_username" value="<?= h($form['source_username']) ?>" autocomplete="off">

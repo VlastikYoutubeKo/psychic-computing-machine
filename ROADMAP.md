@@ -46,3 +46,16 @@ exercises it -- not just "the code compiles."
    correctness bug and bounded in time, but worth revisiting (e.g.
    per-stream locking, or starting the session outside the global lock)
    before this carries real concurrent viewers.
+
+## Possible later (ideas, not planned)
+
+- **Xtream Codes as an output.** StreamVault itself answers as an Xtream
+  server (`player_api.php`, `get.php`, `/live/<user>/<pass>/<id>.ts|m3u8`),
+  so players such as TiviMate or IPTV Smarters log in with server +
+  username + password. Needs "lines" (viewer accounts) with their own
+  credentials, allowed streams, expiry and a concurrent-connection limit.
+  The leak-protection angle: a leaked URL identifies the line it belongs
+  to, so only that line is revoked, and the Leak Checker would search for
+  these URLs too. EPG (`xmltv.php`) could follow; VOD/series are out of
+  scope. Judged not worth it for now (2026-10-01); Xtream as a *source* is
+  implemented (see CHANGELOG).

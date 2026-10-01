@@ -18,7 +18,7 @@ $pageTitle = 'Streams';
 $activeNav = 'streams';
 require __DIR__ . '/includes/layout_top.php';
 ?>
-<div class="sv-page-heading"><div><h1>Streams</h1><p class="sv-help">Manage source feeds and the access points you share.</p></div><a href="stream_form.php" class="btn btn-primary">+ Add stream</a></div>
+<div class="sv-page-heading"><div><h1>Streams</h1><p class="sv-help">Manage source feeds and the access points you share.</p></div><div><a href="xtream_import.php" class="btn">Import from Xtream Codes</a> <a href="stream_form.php" class="btn btn-primary">+ Add stream</a></div></div>
 
 <div class="sv-panel">
   <?php if (!$streams): ?>

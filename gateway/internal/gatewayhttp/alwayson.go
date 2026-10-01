@@ -189,7 +189,7 @@ func (h *Handler) startRelay(st store.Stream, sig string) error {
 // continuous MPEG-TS stream for ffmpeg: the body itself for TS sources, or an
 // hlspull stream for HLS sources.
 func (h *Handler) openRelaySource(ctx context.Context, st store.Stream) (io.ReadCloser, error) {
-	entry, err := url.Parse(st.SourceURL)
+	entry, err := h.sourceEntryURL(st)
 	if err != nil {
 		return nil, fmt.Errorf("unparsable source URL")
 	}

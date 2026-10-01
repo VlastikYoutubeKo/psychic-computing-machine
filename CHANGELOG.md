@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-10-01 -- Xtream Codes sources
+
+- New admin page "Import from Xtream Codes" (linked from Streams): enter the
+  server, username and password, pick live channels from the panel's list
+  (search, category filter), and each becomes a stream. Shows the account's
+  status, expiry and connection limit.
+- Source URLs can carry `{username}` / `{password}` placeholders for sources
+  that want credentials in the URL path. The gateway (and nodes) substitute
+  the stream's encrypted credentials at fetch time, escaped for path/query,
+  and do not also send Basic auth. The password is never stored or shown in
+  plaintext; fetch errors no longer carry the request URL.
+- The import talks to the panel from the admin server: for regular accounts
+  the host must be public and the connection is pinned to the checked
+  address; redirects are never followed.
+- Leak Checker: waits out GitHub's search rate-limit windows instead of
+  stopping after ~10 access points, so every access point is scanned.
+
 ## 2026-09-27 -- Fixes from Codex's independent review
 
 - Critical: regular accounts could point source_url at internal services

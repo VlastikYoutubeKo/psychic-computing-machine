@@ -240,9 +240,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sourceEntry, err := url.Parse(ap.Stream.SourceURL)
+	sourceEntry, err := h.sourceEntryURL(ap.Stream)
 	if err != nil {
-		log.Printf("stream %d has unparsable source_url", ap.Stream.ID)
+		log.Printf("stream %d has an unusable source_url: %v", ap.Stream.ID, err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -480,7 +480,9 @@ func (h *Handler) fetchWithHeaderTimeout(ctx context.Context, target *url.URL, s
 	if err != nil {
 		return nil, err
 	}
-	if s.SourceUsername.Valid && s.SourcePasswordEnc.Valid {
+	// Placeholder URLs already carry the credentials where the source wants
+	// them; don't also send them as Basic auth to every segment host.
+	if s.SourceUsername.Valid && s.SourcePasswordEnc.Valid && !usesCredentialPlaceholders(s.SourceURL) {
 		if h.Key == nil {
 			return nil, fmt.Errorf("stream %d requires source credentials but no encryption key is loaded", s.ID)
 		}
@@ -490,7 +492,11 @@ func (h *Handler) fetchWithHeaderTimeout(ctx context.Context, target *url.URL, s
 		}
 		req.SetBasicAuth(s.SourceUsername.String, string(pw))
 	}
-	return client.Do(req)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, redactURLError(err)
+	}
+	return resp, nil
 }
 
 // Entry fetches: generous wait for the first response from a cold source,
