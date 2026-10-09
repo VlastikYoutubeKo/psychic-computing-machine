@@ -45,7 +45,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             sv_flash('err', $err);
         } else {
             if (!sv_is_admin($operator)) {
-                $count = $db->prepare('SELECT COUNT(*) FROM access_points ap JOIN streams s ON s.id=ap.stream_id WHERE s.owner_id=?');
+                // Revoked access points can't come back, so only active ones count.
+                $count = $db->prepare("SELECT COUNT(*) FROM access_points ap JOIN streams s ON s.id=ap.stream_id WHERE s.owner_id=? AND ap.status='active'");
                 $count->execute([$operator['id']]);
                 if ((int) $count->fetchColumn() >= (int) $operator['max_access_points']) {
                     sv_flash('err', 'Access point limit reached.'); sv_redirect("stream_view.php?id=$id");

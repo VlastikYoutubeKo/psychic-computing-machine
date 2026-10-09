@@ -424,7 +424,7 @@ func (m *Manager) startLocked(variant string, d descriptor, forceSilent bool) (*
 	}
 	args := []string{"-hide_banner", "-loglevel", "error", "-nostdin", "-re", "-stream_loop", "-1", "-i", asset}
 	args = append(args, audio...)
-	args = append(args, "-vf", filter, "-map", "0:v:0", "-map", "1:a:0", "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage", "-crf", "30", "-pix_fmt", "yuv420p", "-r", "10", "-g", "20", "-keyint_min", "20", "-sc_threshold", "0", "-c:a", "aac", "-b:a", "48k", "-ar", "48000", "-ac", "2", "-af", "volume="+strconv.FormatFloat(float64(a.Volume)/100, 'f', 2, 64), "-threads", "1", "-f", "hls", "-hls_time", "2", "-hls_list_size", "6", "-hls_flags", "delete_segments+omit_endlist+temp_file", "-hls_segment_filename", filepath.Join(dir, "seg%06d.ts"), filepath.Join(dir, "index.m3u8"))
+	args = append(args, "-vf", filter, "-map", "0:v:0", "-map", "1:a:0", "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage", "-crf", "30", "-pix_fmt", "yuv420p", "-r", "10", "-g", "20", "-keyint_min", "20", "-sc_threshold", "0", "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2", "-af", "volume="+strconv.FormatFloat(float64(a.Volume)/100, 'f', 2, 64), "-threads", "1", "-f", "hls", "-hls_time", "2", "-hls_list_size", "6", "-hls_flags", "delete_segments+omit_endlist+temp_file", "-hls_segment_filename", filepath.Join(dir, "seg%06d.ts"), filepath.Join(dir, "index.m3u8"))
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	cmd.Env = append(os.Environ(), "TZ=Europe/Prague")

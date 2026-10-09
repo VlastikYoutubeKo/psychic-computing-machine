@@ -93,7 +93,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 $accounts = $db->query("SELECT o.id,o.username,o.role,o.status,o.max_streams,o.max_access_points,o.allow_remux,o.allow_always_on,o.invite_expires_at,
  (SELECT COUNT(*) FROM streams s WHERE s.owner_id=o.id) AS streams_used,
- (SELECT COUNT(*) FROM access_points ap JOIN streams s ON s.id=ap.stream_id WHERE s.owner_id=o.id) AS points_used
+ (SELECT COUNT(*) FROM access_points ap JOIN streams s ON s.id=ap.stream_id WHERE s.owner_id=o.id AND ap.status='active') AS points_used
  FROM operators o ORDER BY o.role,o.username COLLATE NOCASE")->fetchAll();
 $pageTitle = 'Accounts'; $activeNav = 'accounts';
 require __DIR__ . '/includes/layout_top.php';

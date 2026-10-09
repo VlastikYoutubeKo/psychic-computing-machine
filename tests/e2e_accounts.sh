@@ -123,6 +123,16 @@ mkstream alice alice-2 >/dev/null; mkstream alice alice-3 >/dev/null
 check "stream limit (2) enforced" 2 "$(q "SELECT COUNT(*) FROM streams WHERE owner_id=(SELECT id FROM operators WHERE username='alice')")"
 for p in a2 a3 a4; do post alice "stream_view.php?id=$A_S" action=add_access_point "public_path=alice-$p" visibility=public >/dev/null; done
 check "access point limit (3) enforced" 3 "$(q "SELECT COUNT(*) FROM access_points ap JOIN streams s ON s.id=ap.stream_id WHERE s.owner_id=(SELECT id FROM operators WHERE username='alice')")"
+# Revoked access points can't be un-revoked, so they free their slot.
+ALICE_A3=$(q "SELECT id FROM access_points WHERE public_path='alice-a3'")
+post alice "stream_view.php?id=$A_S" action=revoke_access_point "access_point_id=$ALICE_A3" >/dev/null
+check "revoked access point is revoked" revoked "$(q "SELECT status FROM access_points WHERE id=$ALICE_A3")"
+post alice "stream_view.php?id=$A_S" action=add_access_point public_path=alice-a5 visibility=public >/dev/null
+check "revoked access point no longer counts toward the limit" 1 "$(q "SELECT COUNT(*) FROM access_points WHERE public_path='alice-a5'")"
+post alice "stream_view.php?id=$A_S" action=add_access_point public_path=alice-a6 visibility=public >/dev/null
+check "limit still enforced on active access points" 0 "$(q "SELECT COUNT(*) FROM access_points WHERE public_path='alice-a6'")"
+check "trigger also counts only active access points" "access point quota reached" "$(q "INSERT INTO access_points (stream_id, public_path, visibility) VALUES ($A_S, 'alice-direct', 'public')" 2>&1 | grep -o 'access point quota reached')"
+get admin accounts.php >/dev/null; grep -q "<td>3 / 3</td>" "$WORK/last.html" && ok "accounts page counts active access points only" || bad "accounts page usage wrong"
 
 # --- regular accounts may not point streams at internal services --------------
 for u in "http://127.0.0.1:2019/config/" "http://172.18.0.1:3306/" "http://169.254.169.254/latest/meta-data/"; do
