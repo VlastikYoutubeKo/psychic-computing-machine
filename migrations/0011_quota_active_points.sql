@@ -7,3 +7,4 @@ AND (SELECT COUNT(*) FROM access_points WHERE status='active' AND stream_id IN
   (SELECT id FROM streams WHERE owner_id=(SELECT owner_id FROM streams WHERE id=NEW.stream_id))) >=
   (SELECT max_access_points FROM operators WHERE id=(SELECT owner_id FROM streams WHERE id=NEW.stream_id))
 BEGIN SELECT RAISE(ABORT,'access point quota reached'); END;
+INSERT OR IGNORE INTO schema_migrations (version) VALUES ('0011_quota_active_points');
